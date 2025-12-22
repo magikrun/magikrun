@@ -1,0 +1,45 @@
+[package]
+name = "magikrun"
+version = "0.1.0"
+edition = "2024"
+description = "OCI-compliant container runtime abstraction"
+license = "Apache-2.0"
+repository = "https://github.com/magikrun/magikpod"
+keywords = ["oci", "containers", "runtime"]
+categories = ["virtualization"]
+
+[dependencies]
+# Core
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "process", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+
+# OCI
+oci-spec = "0.8"
+oci-distribution = "0.11"
+
+# Executors - always compiled, runtime availability check
+wasmtime = "27"
+wasmtime-wasi = "27"
+krun-sys = "1.10"
+
+# Bundle/Image handling
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
+hex = "0.4"
+
+# Utilities
+dirs = "6"
+uuid = { version = "1", features = ["v7", "serde"] }
+libc = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+
+# Youki libcontainer for native OCI container runtime (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+libcontainer = { version = "0.4", default-features = false, features = ["v2"] }
+libcgroups = { version = "0.4", default-features = false, features = ["v2"] }

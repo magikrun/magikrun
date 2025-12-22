@@ -1,0 +1,20 @@
+# Build artifacts
+/target
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+AGENTS.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust
+Cargo.lock
+
+# Test artifacts
+*.log
+/tmp/
