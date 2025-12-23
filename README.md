@@ -4,6 +4,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024_edition-orange.svg)]()
+[![Crates.io](https://img.shields.io/crates/v/magikrun.svg)](https://crates.io/crates/magikrun)
+[![Documentation](https://docs.rs/magikrun/badge.svg)](https://docs.rs/magikrun)
 
 `magikrun` provides a pure OCI Runtime Spec compliant interface for container operations across heterogeneous isolation backends. It handles single-container operations only—pod semantics (shared namespaces, pause containers) are delegated to the higher-level [`magikpod`](../magikpod) crate.
 
