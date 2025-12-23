@@ -101,7 +101,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::constants::{MAX_CONTAINERS, EXEC_TIMEOUT, validate_container_id};
+    use crate::constants::{EXEC_TIMEOUT, MAX_CONTAINERS, validate_container_id};
     use crate::error::{Error, Result};
     use crate::runtime::{
         ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal,
@@ -386,7 +386,7 @@ mod linux {
             // Poll for container exit and retrieve exit code (with timeout)
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
-            
+
             loop {
                 if start.elapsed() > timeout {
                     return Err(Error::Timeout {
@@ -394,7 +394,7 @@ mod linux {
                         duration: timeout,
                     });
                 }
-                
+
                 let container = self.load_container(id)?;
 
                 if container.state.status == NativeStatus::Stopped {
@@ -458,7 +458,10 @@ mod linux {
                 // This is handled by prepending "cd <dir> &&" to the command
                 // For simplicity, we'll run the command directly and let
                 // the container's process handle the cwd
-                warn!("working_dir not directly supported in exec, ignoring: {}", dir);
+                warn!(
+                    "working_dir not directly supported in exec, ignoring: {}",
+                    dir
+                );
             }
 
             // Add environment variables via env command wrapper

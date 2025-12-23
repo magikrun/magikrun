@@ -99,7 +99,9 @@
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use crate::constants::{DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS, validate_container_id};
+    use crate::constants::{
+        DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS, validate_container_id,
+    };
     use crate::error::{Error, Result};
     use crate::runtime::{ContainerState, ContainerStatus, OciRuntime, Signal};
     use async_trait::async_trait;
@@ -176,11 +178,12 @@ mod platform {
                 });
             }
 
-            let rootfs_cstr =
-                CString::new(rootfs.to_string_lossy().as_bytes()).map_err(|_| Error::CreateFailed {
+            let rootfs_cstr = CString::new(rootfs.to_string_lossy().as_bytes()).map_err(|_| {
+                Error::CreateFailed {
                     id: bundle.to_string_lossy().to_string(),
                     reason: "invalid rootfs path".to_string(),
-                })?;
+                }
+            })?;
 
             // SAFETY: krun_set_root is safe with valid ctx and path
             let ret = unsafe { krun_sys::krun_set_root(ctx, rootfs_cstr.as_ptr()) };
@@ -206,12 +209,7 @@ mod platform {
 
             // SAFETY: krun_set_exec is safe with valid ctx and path
             let ret = unsafe {
-                krun_sys::krun_set_exec(
-                    ctx,
-                    init_cstr.as_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
+                krun_sys::krun_set_exec(ctx, init_cstr.as_ptr(), std::ptr::null(), std::ptr::null())
             };
             if ret < 0 {
                 return Err(Error::CreateFailed {
@@ -435,7 +433,7 @@ mod platform {
         async fn wait(&self, id: &str) -> Result<i32> {
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
-            
+
             loop {
                 if start.elapsed() > timeout {
                     return Err(Error::Timeout {
@@ -443,7 +441,7 @@ mod platform {
                         duration: timeout,
                     });
                 }
-                
+
                 let state = self.state(id).await?;
                 if state.status == ContainerStatus::Stopped {
                     return Ok(0);

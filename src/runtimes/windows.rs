@@ -57,9 +57,13 @@
 //!
 //! [`OciRuntime`]: crate::runtime::OciRuntime
 
-use crate::constants::{validate_container_id, CONTAINER_START_TIMEOUT, EXEC_TIMEOUT, MAX_CONTAINERS};
+use crate::constants::{
+    CONTAINER_START_TIMEOUT, EXEC_TIMEOUT, MAX_CONTAINERS, validate_container_id,
+};
 use crate::error::{Error, Result};
-use crate::runtime::{ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal};
+use crate::runtime::{
+    ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -77,7 +81,8 @@ const DISTRO_PREFIX: &str = "magikrun-";
 
 /// Valid characters for environment variable names.
 /// SECURITY: Only allow POSIX-compliant env var names to prevent shell injection.
-const ENV_VAR_NAME_PATTERN: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+const ENV_VAR_NAME_PATTERN: &str =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
 
 /// Timeout for WSL command execution.
 const WSL_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -233,7 +238,10 @@ impl WindowsRuntime {
                     }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    (false, Some(format!("wsl --status failed: {}", stderr.trim())))
+                    (
+                        false,
+                        Some(format!("wsl --status failed: {}", stderr.trim())),
+                    )
                 }
             }
             Err(e) => (false, Some(format!("wsl.exe not found: {}", e))),
@@ -303,7 +311,11 @@ impl WindowsRuntime {
     }
 
     /// Executes a WSL command with the given arguments.
-    async fn wsl_command(&self, args: &[&str], timeout_dur: std::time::Duration) -> Result<std::process::Output> {
+    async fn wsl_command(
+        &self,
+        args: &[&str],
+        timeout_dur: std::time::Duration,
+    ) -> Result<std::process::Output> {
         debug!("WSL command: wsl.exe {}", args.join(" "));
 
         let mut cmd = Command::new("wsl.exe");
@@ -362,10 +374,7 @@ impl WindowsRuntime {
 
         // We need a helper distro for tar creation. Use any available distro or fallback.
         let output = self
-            .wsl_command(
-                &["--list", "--quiet"],
-                WSL_COMMAND_TIMEOUT,
-            )
+            .wsl_command(&["--list", "--quiet"], WSL_COMMAND_TIMEOUT)
             .await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -376,10 +385,7 @@ impl WindowsRuntime {
 
         if let Some(distro) = helper_distro {
             // Use existing distro to create tar
-            let tar_cmd = format!(
-                "cd '{}' && tar -cf '{}' .",
-                rootfs_wsl, tar_wsl
-            );
+            let tar_cmd = format!("cd '{}' && tar -cf '{}' .", rootfs_wsl, tar_wsl);
             let output = self
                 .wsl_command(
                     &["-d", &distro, "--", "bash", "-c", &tar_cmd],
@@ -425,7 +431,9 @@ impl WindowsRuntime {
 
     #[cfg(not(target_os = "windows"))]
     async fn create_rootfs_tarball(&self, _rootfs: &Path, _tar_path: &Path) -> Result<()> {
-        Err(Error::Internal("Not available on this platform".to_string()))
+        Err(Error::Internal(
+            "Not available on this platform".to_string(),
+        ))
     }
 
     /// Imports a rootfs as a new WSL distro.
@@ -477,8 +485,15 @@ impl WindowsRuntime {
     }
 
     #[cfg(not(target_os = "windows"))]
-    async fn import_distro(&self, _distro_name: &str, _vhd_path: &Path, _tar_path: &Path) -> Result<()> {
-        Err(Error::Internal("Not available on this platform".to_string()))
+    async fn import_distro(
+        &self,
+        _distro_name: &str,
+        _vhd_path: &Path,
+        _tar_path: &Path,
+    ) -> Result<()> {
+        Err(Error::Internal(
+            "Not available on this platform".to_string(),
+        ))
     }
 
     /// Unregisters a WSL distro, cleaning up all resources.
@@ -527,11 +542,14 @@ impl WindowsRuntime {
     }
 
     /// Parses OCI config.json to extract entrypoint, env, and working dir.
-    fn parse_oci_config(config_path: &Path) -> Result<(Vec<String>, HashMap<String, String>, String)> {
-        let config_str = std::fs::read_to_string(config_path).map_err(|e| Error::InvalidBundle {
-            path: config_path.to_path_buf(),
-            reason: format!("Failed to read config.json: {}", e),
-        })?;
+    fn parse_oci_config(
+        config_path: &Path,
+    ) -> Result<(Vec<String>, HashMap<String, String>, String)> {
+        let config_str =
+            std::fs::read_to_string(config_path).map_err(|e| Error::InvalidBundle {
+                path: config_path.to_path_buf(),
+                reason: format!("Failed to read config.json: {}", e),
+            })?;
 
         let config: serde_json::Value =
             serde_json::from_str(&config_str).map_err(|e| Error::InvalidBundle {

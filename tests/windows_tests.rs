@@ -3,8 +3,8 @@
 //! Tests for the WindowsRuntime WSL2 MicroVM-based container execution.
 //! These tests are platform-conditional and only run on Windows.
 
-use magikrun::runtimes::WindowsRuntime;
 use magikrun::runtime::OciRuntime;
+use magikrun::runtimes::WindowsRuntime;
 
 /// Test that WindowsRuntime can be created on any platform.
 #[test]
@@ -17,7 +17,7 @@ fn test_windows_runtime_creation() {
 #[test]
 fn test_windows_runtime_availability() {
     let runtime = WindowsRuntime::new();
-    
+
     #[cfg(target_os = "windows")]
     {
         // On Windows, availability depends on WSL2 status
@@ -28,7 +28,7 @@ fn test_windows_runtime_availability() {
             assert!(runtime.unavailable_reason().is_some());
         }
     }
-    
+
     #[cfg(not(target_os = "windows"))]
     {
         // On non-Windows, should always be unavailable
@@ -47,7 +47,7 @@ mod path_tests {
     fn test_runtime_naming() {
         // This test validates the runtime is properly named for the microVM approach
         let runtime = WindowsRuntime::new();
-        
+
         // The runtime should be constructible regardless of platform
         assert_eq!(runtime.name(), "wsl2-microvm");
     }
@@ -62,7 +62,7 @@ mod windows_specific_tests {
     #[test]
     fn test_storage_path() {
         let runtime = WindowsRuntime::new();
-        
+
         // Should have a storage path for VHDs
         let storage = runtime.storage_path();
         assert!(!storage.as_os_str().is_empty());
@@ -71,10 +71,12 @@ mod windows_specific_tests {
     #[tokio::test]
     async fn test_create_without_wsl() {
         let runtime = WindowsRuntime::new();
-        
+
         if !runtime.is_available() {
             // Should fail gracefully
-            let result = runtime.create("test-container", Path::new("C:\\nonexistent")).await;
+            let result = runtime
+                .create("test-container", Path::new("C:\\nonexistent"))
+                .await;
             assert!(result.is_err());
         }
     }
@@ -91,7 +93,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_full_microvm_lifecycle() {
         let runtime = WindowsRuntime::new();
-        
+
         if !runtime.is_available() {
             eprintln!("Skipping integration test: WSL2 not available");
             return;
@@ -100,18 +102,19 @@ mod integration_tests {
         // Create a minimal bundle with rootfs
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let bundle_path = temp_dir.path();
-        
+
         // Create rootfs directory with minimal content
         let rootfs = bundle_path.join("rootfs");
         std::fs::create_dir_all(&rootfs).expect("Failed to create rootfs");
         std::fs::create_dir_all(rootfs.join("bin")).expect("Failed to create bin");
-        
+
         // Create a minimal shell script as entrypoint
         std::fs::write(
             rootfs.join("bin/init"),
             "#!/bin/sh\necho 'Hello from MicroVM'\nexit 0",
-        ).expect("Failed to write init");
-        
+        )
+        .expect("Failed to write init");
+
         // Create OCI config.json
         std::fs::write(
             bundle_path.join("config.json"),
@@ -123,7 +126,8 @@ mod integration_tests {
                     "env": ["PATH=/bin:/usr/bin"]
                 }
             }"#,
-        ).expect("Failed to write config.json");
+        )
+        .expect("Failed to write config.json");
 
         let container_id = "test-microvm-container";
 

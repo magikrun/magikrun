@@ -205,11 +205,17 @@ impl WasmtimeRuntime {
     }
 
     fn load_module_from_file(&self, path: &Path) -> Result<Module> {
-        let engine = self.engine.as_ref().ok_or_else(|| Error::RuntimeUnavailable {
-            runtime: "wasmtime".to_string(),
-            reason: self.engine_error.clone().unwrap_or_else(|| "engine not initialized".to_string()),
-        })?;
-        
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| Error::RuntimeUnavailable {
+                runtime: "wasmtime".to_string(),
+                reason: self
+                    .engine_error
+                    .clone()
+                    .unwrap_or_else(|| "engine not initialized".to_string()),
+            })?;
+
         let bytes = std::fs::read(path).map_err(|e| Error::InvalidBundle {
             path: path.to_path_buf(),
             reason: format!("failed to read module: {}", e),
@@ -331,11 +337,17 @@ impl OciRuntime for WasmtimeRuntime {
         };
 
         // Get engine reference
-        let engine = self.engine.clone().ok_or_else(|| Error::RuntimeUnavailable {
-            runtime: "wasmtime".to_string(),
-            reason: self.engine_error.clone().unwrap_or_else(|| "engine not initialized".to_string()),
-        })?;
-        
+        let engine = self
+            .engine
+            .clone()
+            .ok_or_else(|| Error::RuntimeUnavailable {
+                runtime: "wasmtime".to_string(),
+                reason: self
+                    .engine_error
+                    .clone()
+                    .unwrap_or_else(|| "engine not initialized".to_string()),
+            })?;
+
         // Load and run module in background
         let id_owned = id.to_string();
         // Clone Arc for sharing with async task
@@ -441,7 +453,7 @@ impl OciRuntime for WasmtimeRuntime {
     async fn wait(&self, id: &str) -> Result<i32> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
-        
+
         loop {
             if start.elapsed() > timeout {
                 return Err(Error::Timeout {
@@ -449,7 +461,7 @@ impl OciRuntime for WasmtimeRuntime {
                     duration: timeout,
                 });
             }
-            
+
             let state = self.state(id).await?;
             if state.status == ContainerStatus::Stopped {
                 let containers = self

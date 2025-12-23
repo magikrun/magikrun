@@ -73,7 +73,9 @@
 //! //   - config.json (OCI runtime spec)
 //! ```
 
-use crate::constants::{MAX_FILES_PER_LAYER, MAX_LAYER_SIZE, MAX_ROOTFS_SIZE, OCI_RUNTIME_SPEC_VERSION};
+use crate::constants::{
+    MAX_FILES_PER_LAYER, MAX_LAYER_SIZE, MAX_ROOTFS_SIZE, OCI_RUNTIME_SPEC_VERSION,
+};
 use crate::error::{Error, Result};
 use crate::registry::{ImageHandle, LayerInfo};
 use crate::storage::BlobStore;
@@ -344,7 +346,7 @@ impl BundleBuilder {
                 });
             }
         }
-        
+
         let bundle_dir = self.bundle_path_unique(&image.digest);
         let rootfs = bundle_dir.join("rootfs");
 
