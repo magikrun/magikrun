@@ -74,21 +74,19 @@ fn test_youki_runtime_with_custom_state_root() {
 }
 
 #[test]
+#[cfg(not(target_os = "linux"))]
 fn test_youki_unavailable_on_non_linux() {
     let runtime = YoukiRuntime::new();
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        assert!(
-            !runtime.is_available(),
-            "youki should not be available on non-Linux"
-        );
-        assert!(runtime.unavailable_reason().is_some());
-        assert!(
-            runtime.unavailable_reason().unwrap().contains("Linux"),
-            "reason should mention Linux"
-        );
-    }
+    assert!(
+        !runtime.is_available(),
+        "youki should not be available on non-Linux"
+    );
+    assert!(runtime.unavailable_reason().is_some());
+    assert!(
+        runtime.unavailable_reason().unwrap().contains("Linux"),
+        "reason should mention Linux"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -233,29 +231,27 @@ fn test_runtime_in_vec() {
 // =============================================================================
 
 #[tokio::test]
+#[cfg(not(target_os = "linux"))]
 async fn test_unavailable_runtime_operations_fail() {
+    use std::path::Path;
+
     let youki = YoukiRuntime::new();
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        use std::path::Path;
+    // All operations should fail on non-Linux
+    let result = youki.create("test", Path::new("/tmp/bundle")).await;
+    assert!(result.is_err());
 
-        // All operations should fail on non-Linux
-        let result = youki.create("test", Path::new("/tmp/bundle")).await;
-        assert!(result.is_err());
+    let result = youki.start("test").await;
+    assert!(result.is_err());
 
-        let result = youki.start("test").await;
-        assert!(result.is_err());
+    let result = youki.state("test").await;
+    assert!(result.is_err());
 
-        let result = youki.state("test").await;
-        assert!(result.is_err());
+    let result = youki.kill("test", magikrun::Signal::Term, false).await;
+    assert!(result.is_err());
 
-        let result = youki.kill("test", magikrun::Signal::Term, false).await;
-        assert!(result.is_err());
-
-        let result = youki.delete("test", false).await;
-        assert!(result.is_err());
-    }
+    let result = youki.delete("test", false).await;
+    assert!(result.is_err());
 }
 
 #[tokio::test]
