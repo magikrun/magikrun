@@ -145,6 +145,70 @@ jobs:
           LIBRARY_PATH: /opt/homebrew/lib
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
+  code-quality-linux-aarch64:
+    name: Clippy (Linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git \
+            llvm-dev \
+            libclang-dev \
+            clang
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-aarch64-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-aarch64-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-aarch64-cargo-clippy-
+
+      - name: Clippy (all warnings as errors)
+        run: cargo clippy -- -D warnings
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
+
   # ===========================================================================
   # Unit Tests
   # ===========================================================================
@@ -265,6 +329,104 @@ jobs:
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
           LIBRARY_PATH: /opt/homebrew/lib
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
+
+  unit-tests-linux-aarch64:
+    name: Tests (Linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    needs: [formatting]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git \
+            llvm-dev \
+            libclang-dev \
+            clang
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-aarch64-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
+
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo usermod -a -G kvm $USER
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-aarch64-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-aarch64-cargo-test-
+
+      - name: Run unit tests
+        run: cargo test
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
+
+  unit-tests-windows:
+    name: Tests (Windows x86_64)
+    runs-on: windows-latest
+    needs: [formatting]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x86_64-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-cargo-test-
+
+      # Note: libkrun and youki are not available on Windows
+      # Only WindowsRuntime (WSL2 MicroVM) and WasmtimeRuntime are functional
+      - name: Run unit tests (Windows-compatible only)
+        run: cargo test
+        env:
+          RUST_TEST_THREADS: 1
 
   # ===========================================================================
   # Security Audit
@@ -531,9 +693,12 @@ jobs:
     needs:
       - formatting
       - code-quality-linux
+      - code-quality-linux-aarch64
       - code-quality-macos
       - unit-tests-linux
+      - unit-tests-linux-aarch64
       - unit-tests-macos
+      - unit-tests-windows
       - security-audit
       - build-matrix
       - docs
@@ -544,9 +709,12 @@ jobs:
         run: |
           if [[ "${{ needs.formatting.result }}" != "success" ]] || \
              [[ "${{ needs.code-quality-linux.result }}" != "success" ]] || \
+             [[ "${{ needs.code-quality-linux-aarch64.result }}" != "success" ]] || \
              [[ "${{ needs.code-quality-macos.result }}" != "success" ]] || \
              [[ "${{ needs.unit-tests-linux.result }}" != "success" ]] || \
+             [[ "${{ needs.unit-tests-linux-aarch64.result }}" != "success" ]] || \
              [[ "${{ needs.unit-tests-macos.result }}" != "success" ]] || \
+             [[ "${{ needs.unit-tests-windows.result }}" != "success" ]] || \
              [[ "${{ needs.security-audit.result }}" != "success" ]] || \
              [[ "${{ needs.build-matrix.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
