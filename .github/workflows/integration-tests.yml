@@ -22,6 +22,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   LIBKRUN_VERSION: "v1.16.0"
 
@@ -32,6 +36,7 @@ jobs:
   integration-linux-x86_64:
     name: Integration (Linux x86_64)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -129,6 +134,7 @@ jobs:
   integration-macos:
     name: Integration (macOS arm64)
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -162,7 +168,6 @@ jobs:
 
       - name: Run integration tests
         run: cargo test --release -- --ignored
-        continue-on-error: true
         env:
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
