@@ -143,4 +143,5 @@ pub use error::{Error, Result};
 pub use platform::{Arch, Capability, Os, Platform};
 pub use registry::{ImageHandle, RegistryClient, pull_image};
 pub use runtime::{ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal};
+pub use runtimes::{KrunRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime, YoukiRuntime};
 pub use storage::BlobStore;

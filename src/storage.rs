@@ -328,6 +328,25 @@ impl BlobStore {
     }
 
     /// Garbage collects unreferenced blobs.
+    ///
+    /// # Safety Warning
+    ///
+    /// **GC is NOT safe during concurrent image pulls.** This method does not
+    /// implement locking or reference counting. Calling GC while `pull_image`
+    /// is in progress may delete layers that are being downloaded, causing
+    /// pull failures or corrupted images.
+    ///
+    /// Callers MUST ensure:
+    /// 1. All `pull_image` operations are complete before calling GC
+    /// 2. No new pulls are started during GC
+    /// 3. External synchronization (mutex, pause flag) if running in multi-threaded context
+    ///
+    /// # Future Improvements
+    ///
+    /// A production implementation should use one of:
+    /// - Reference counting with atomic decrement
+    /// - Write-ahead log for in-flight digests
+    /// - File locking on blob files during write
     pub fn gc(&self, referenced: &[String]) -> Result<GcStats> {
         let all_blobs = self.list_blobs()?;
         let mut removed = 0u64;

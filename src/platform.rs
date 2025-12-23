@@ -128,6 +128,7 @@ pub enum Arch {
 /// - `Namespaces` may require root/CAP_SYS_ADMIN
 /// - `Cgroups` may require cgroup v2 unified hierarchy
 /// - `Hypervisor` may require KVM module loaded with access
+/// - `Wsl2` may require Windows 10+ with WSL2 enabled
 ///
 /// Runtime constructors perform additional validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -140,6 +141,8 @@ pub enum Capability {
     Seccomp,
     /// Hardware virtualization (KVM on Linux, HVF on macOS)
     Hypervisor,
+    /// Windows Subsystem for Linux 2 (WSL2)
+    Wsl2,
     /// WASM runtime available (always true - wasmtime is pure Rust)
     WasmRuntime,
 }
@@ -245,6 +248,13 @@ impl Platform {
                 }
                 // macOS has no namespace/cgroup support
             }
+            Os::Windows => {
+                // Check for WSL2
+                if Self::check_wsl2() {
+                    caps.insert(Capability::Wsl2);
+                }
+                // Windows has no native namespace/cgroup/hypervisor support for containers
+            }
             _ => {
                 // Other platforms: minimal capabilities
             }
@@ -256,23 +266,22 @@ impl Platform {
     /// Checks if KVM is available on Linux.
     #[cfg(target_os = "linux")]
     fn check_kvm() -> bool {
-        use std::fs;
-        use std::os::unix::fs::MetadataExt;
+        use std::fs::OpenOptions;
 
         let kvm_path = Path::new("/dev/kvm");
         if !kvm_path.exists() {
             return false;
         }
 
-        // Check if we have read/write access
-        match fs::metadata(kvm_path) {
-            Ok(meta) => {
-                let mode = meta.mode();
-                // Check if accessible (very basic check)
-                mode & 0o006 != 0 || mode & 0o060 != 0 || mode & 0o600 != 0
-            }
-            Err(_) => false,
-        }
+        // SECURITY: Actually try to open /dev/kvm to verify access.
+        // Permission bit checks are insufficient because they don't account
+        // for the current user/group membership. Opening the device confirms
+        // we can actually use it.
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(kvm_path)
+            .is_ok()
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -284,7 +293,9 @@ impl Platform {
     #[cfg(target_os = "macos")]
     fn check_hvf() -> bool {
         // Try to create a libkrun context to verify HVF works
-        // SAFETY: krun_create_ctx is safe to call and returns < 0 on failure
+        // SAFETY: krun_create_ctx is safe to call with no arguments.
+        // Returns < 0 on failure, >= 0 on success. If successful, we must
+        // free the context with krun_free_ctx to avoid resource leaks.
         unsafe {
             let ctx = krun_sys::krun_create_ctx();
             if ctx >= 0 {
@@ -300,6 +311,31 @@ impl Platform {
         false
     }
 
+    /// Checks if WSL2 is available on Windows.
+    #[cfg(target_os = "windows")]
+    fn check_wsl2() -> bool {
+        use std::process::Command;
+
+        // Try to run wsl --status to check if WSL2 is available
+        match Command::new("wsl.exe").args(["--status"]).output() {
+            Ok(output) => {
+                if output.status.success() {
+                    // Check if it's WSL2 (not WSL1)
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    stdout.contains("2") || stdout.to_lowercase().contains("wsl 2")
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn check_wsl2() -> bool {
+        false
+    }
+
     /// Returns true if native Linux containers are supported.
     pub fn supports_native_containers(&self) -> bool {
         self.capabilities.contains(&Capability::Namespaces)
@@ -309,6 +345,11 @@ impl Platform {
     /// Returns true if hardware virtualization is available.
     pub fn has_hypervisor(&self) -> bool {
         self.capabilities.contains(&Capability::Hypervisor)
+    }
+
+    /// Returns true if WSL2 is available (Windows only).
+    pub fn has_wsl2(&self) -> bool {
+        self.capabilities.contains(&Capability::Wsl2)
     }
 
     /// Returns the OCI platform string (e.g., "linux/amd64").

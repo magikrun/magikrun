@@ -71,6 +71,15 @@ pub const MAX_ROOTFS_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 /// **Attack Vector**: 10,000 1-byte layers would overwhelm file descriptors.
 pub const MAX_LAYERS: usize = 128;
 
+/// Maximum number of files per layer during extraction.
+///
+/// **Security**: Prevents inode exhaustion attacks where a malicious image
+/// contains millions of tiny files to exhaust filesystem inodes.
+///
+/// **Rationale**: 100,000 files per layer is generous for legitimate images
+/// while preventing pathological cases.
+pub const MAX_FILES_PER_LAYER: usize = 100_000;
+
 /// Maximum manifest size (1 MiB).
 ///
 /// **Security**: Prevents memory exhaustion from parsing malformed manifests.
@@ -383,6 +392,7 @@ pub const MAX_CONTAINER_ID_LEN: usize = 128;
 ///
 /// `Ok(())` if valid, `Err(reason)` with a description of the failure.
 #[inline]
+#[must_use = "validation result must be checked to ensure container ID is safe"]
 pub fn validate_container_id(id: &str) -> std::result::Result<(), &'static str> {
     if id.is_empty() {
         return Err("container ID cannot be empty");

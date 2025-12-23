@@ -73,7 +73,7 @@
 //! //   - config.json (OCI runtime spec)
 //! ```
 
-use crate::constants::{MAX_LAYER_SIZE, MAX_ROOTFS_SIZE, OCI_RUNTIME_SPEC_VERSION};
+use crate::constants::{MAX_FILES_PER_LAYER, MAX_LAYER_SIZE, MAX_ROOTFS_SIZE, OCI_RUNTIME_SPEC_VERSION};
 use crate::error::{Error, Result};
 use crate::registry::{ImageHandle, LayerInfo};
 use crate::storage::BlobStore;
@@ -248,6 +248,44 @@ impl BundleBuilder {
         }
     }
 
+    /// Validates a namespace path matches the expected /proc/<pid>/ns/<type> format.
+    ///
+    /// # Security
+    ///
+    /// This prevents namespace injection attacks where a malicious caller could
+    /// pass arbitrary paths that would be injected into config.json.
+    fn is_valid_namespace_path(path: &str, ns_type: &str) -> bool {
+        // Expected format: /proc/<pid>/ns/<type>
+        // Where <pid> is a positive integer and <type> matches the namespace type
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() != 5 {
+            return false;
+        }
+        // parts[0] is empty (leading /), parts[1] is "proc", parts[2] is pid,
+        // parts[3] is "ns", parts[4] is the namespace type
+        if parts[0].is_empty()
+            && parts[1] == "proc"
+            && parts[2].chars().all(|c| c.is_ascii_digit())
+            && !parts[2].is_empty()
+            && parts[3] == "ns"
+            && (parts[4] == ns_type || Self::namespace_type_alias(parts[4]) == ns_type)
+        {
+            return true;
+        }
+        false
+    }
+
+    /// Returns the canonical namespace type for aliases.
+    fn namespace_type_alias(ns: &str) -> &str {
+        match ns {
+            "net" => "network",
+            "network" => "net",
+            "mnt" => "mount",
+            "mount" => "mnt",
+            _ => ns,
+        }
+    }
+
     /// Builds an OCI runtime bundle from an image.
     pub fn build_oci_bundle(
         &self,
@@ -296,6 +334,17 @@ impl BundleBuilder {
         config: &OciContainerConfig,
         namespace_paths: &HashMap<String, PathBuf>,
     ) -> Result<Bundle> {
+        // SECURITY: Validate namespace paths match expected format /proc/<pid>/ns/<type>
+        for (ns_type, path) in namespace_paths {
+            let path_str = path.to_string_lossy();
+            if !Self::is_valid_namespace_path(&path_str, ns_type) {
+                return Err(Error::InvalidBundle {
+                    path: path.clone(),
+                    reason: format!("invalid namespace path for {}: {}", ns_type, path_str),
+                });
+            }
+        }
+        
         let bundle_dir = self.bundle_path_unique(&image.digest);
         let rootfs = bundle_dir.join("rootfs");
 
@@ -348,127 +397,10 @@ impl BundleBuilder {
     }
 
     /// Extracts image layers to the rootfs.
+    ///
+    /// Delegates to [`extract_layers_to_rootfs`] to avoid code duplication.
     fn extract_layers(&self, layers: &[LayerInfo], rootfs: &Path) -> Result<()> {
-        let mut total_size = 0u64;
-
-        for layer in layers {
-            debug!("Extracting layer: {}", layer.digest);
-
-            let data = self.storage.get_blob(&layer.digest)?;
-
-            if data.len() > MAX_LAYER_SIZE {
-                return Err(Error::ImageTooLarge {
-                    size: data.len() as u64,
-                    limit: MAX_LAYER_SIZE as u64,
-                });
-            }
-
-            // Decompress and extract
-            let decoder = GzDecoder::new(&data[..]);
-            let mut archive = Archive::new(decoder);
-
-            for entry in archive
-                .entries()
-                .map_err(|e| Error::LayerExtractionFailed {
-                    digest: layer.digest.clone(),
-                    reason: e.to_string(),
-                })?
-            {
-                let mut entry = entry.map_err(|e| Error::LayerExtractionFailed {
-                    digest: layer.digest.clone(),
-                    reason: e.to_string(),
-                })?;
-
-                let path = entry.path().map_err(|e| Error::LayerExtractionFailed {
-                    digest: layer.digest.clone(),
-                    reason: e.to_string(),
-                })?;
-
-                // SECURITY: Check for path traversal
-                let path_str = path.to_string_lossy();
-                if path_str.contains("..") || path_str.starts_with('/') {
-                    return Err(Error::PathTraversal {
-                        path: path_str.to_string(),
-                    });
-                }
-
-                // Handle whiteout files (deletions)
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if filename.starts_with(".wh.") {
-                    let target = filename.strip_prefix(".wh.").unwrap();
-                    let target_path = rootfs
-                        .join(path.parent().unwrap_or(Path::new("")))
-                        .join(target);
-                    if target_path.exists() {
-                        let _ = fs::remove_file(&target_path);
-                        let _ = fs::remove_dir_all(&target_path);
-                    }
-                    continue;
-                }
-
-                // Track size
-                total_size += entry.size();
-                if total_size > MAX_ROOTFS_SIZE {
-                    return Err(Error::ImageTooLarge {
-                        size: total_size,
-                        limit: MAX_ROOTFS_SIZE,
-                    });
-                }
-
-                // SECURITY: Validate symlink targets stay within rootfs
-                // This prevents symlink attacks where a malicious layer creates a symlink
-                // pointing outside the container, then a later layer writes through it.
-                if entry.header().entry_type().is_symlink()
-                    && let Ok(Some(target)) = entry.link_name()
-                {
-                    let target_str = target.to_string_lossy();
-                    // Absolute symlinks that escape or relative paths with .. are dangerous
-                    if target_str.starts_with('/') {
-                        // Absolute paths are relative to rootfs, but must not contain ..
-                        if target_str.contains("..") {
-                            return Err(Error::PathTraversal {
-                                path: format!("symlink target: {}", target_str),
-                            });
-                        }
-                    } else {
-                        // Relative symlink: resolve against entry's parent directory
-                        let entry_parent = path.parent().unwrap_or(Path::new(""));
-                        let resolved = entry_parent.join(&*target);
-                        let resolved_str = resolved.to_string_lossy();
-                        // Check if resolved path escapes via ..
-                        if resolved_str.contains("..") {
-                            // Normalize and check if it stays within bounds
-                            let mut depth: i32 = 0;
-                            for component in resolved.components() {
-                                match component {
-                                    std::path::Component::ParentDir => depth -= 1,
-                                    std::path::Component::Normal(_) => depth += 1,
-                                    _ => {}
-                                }
-                                if depth < 0 {
-                                    return Err(Error::PathTraversal {
-                                        path: format!(
-                                            "symlink target escapes rootfs: {}",
-                                            target_str
-                                        ),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Unpack
-                entry
-                    .unpack_in(rootfs)
-                    .map_err(|e| Error::LayerExtractionFailed {
-                        digest: layer.digest.clone(),
-                        reason: e.to_string(),
-                    })?;
-            }
-        }
-
-        Ok(())
+        extract_layers_to_rootfs(layers, rootfs, &self.storage)
     }
 
     /// Generates an OCI runtime spec.
@@ -807,6 +739,9 @@ pub fn extract_layers_to_rootfs(
         let decoder = GzDecoder::new(&data[..]);
         let mut archive = Archive::new(decoder);
 
+        // SECURITY: Track file count to prevent inode exhaustion attacks
+        let mut file_count = 0usize;
+
         for entry in archive
             .entries()
             .map_err(|e| Error::LayerExtractionFailed {
@@ -814,6 +749,15 @@ pub fn extract_layers_to_rootfs(
                 reason: e.to_string(),
             })?
         {
+            // SECURITY: Check file count before processing each entry
+            file_count += 1;
+            if file_count > MAX_FILES_PER_LAYER {
+                return Err(Error::ResourceExhausted(format!(
+                    "layer {} exceeds maximum file count ({})",
+                    layer.digest, MAX_FILES_PER_LAYER
+                )));
+            }
+
             let mut entry = entry.map_err(|e| Error::LayerExtractionFailed {
                 digest: layer.digest.clone(),
                 reason: e.to_string(),
@@ -855,10 +799,12 @@ pub fn extract_layers_to_rootfs(
                 });
             }
 
-            // SECURITY: Validate symlink targets stay within rootfs
+            // SECURITY: Validate symlink and hardlink targets stay within rootfs
             // This prevents symlink attacks where a malicious layer creates a symlink
             // pointing outside the container, then a later layer writes through it.
-            if entry.header().entry_type().is_symlink()
+            // Hardlinks can also be used to escape by linking to files outside rootfs.
+            let entry_type = entry.header().entry_type();
+            if (entry_type.is_symlink() || entry_type.is_hard_link())
                 && let Ok(Some(target)) = entry.link_name()
             {
                 let target_str = target.to_string_lossy();

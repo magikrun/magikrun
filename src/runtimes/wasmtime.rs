@@ -128,7 +128,9 @@ use crate::constants::{
 /// WASM modules are automatically cleaned up when `delete()` is called.
 /// Unlike native containers, there are no kernel resources to leak.
 pub struct WasmtimeRuntime {
-    engine: Engine,
+    engine: Option<Engine>,
+    /// Error message if engine creation failed.
+    engine_error: Option<String>,
     /// Container state wrapped in Arc for sharing with async execution tasks.
     containers: Arc<RwLock<HashMap<String, WasmContainer>>>,
 }
@@ -152,11 +154,20 @@ impl WasmtimeRuntime {
         config.consume_fuel(true); // Enable fuel for bounded execution
         config.wasm_memory64(false);
 
-        let engine = Engine::new(&config).expect("Failed to create wasmtime engine");
-
-        Self {
-            engine,
-            containers: Arc::new(RwLock::new(HashMap::new())),
+        match Engine::new(&config) {
+            Ok(engine) => Self {
+                engine: Some(engine),
+                engine_error: None,
+                containers: Arc::new(RwLock::new(HashMap::new())),
+            },
+            Err(e) => {
+                warn!("Failed to create wasmtime engine: {}", e);
+                Self {
+                    engine: None,
+                    engine_error: Some(format!("engine creation failed: {}", e)),
+                    containers: Arc::new(RwLock::new(HashMap::new())),
+                }
+            }
         }
     }
 
@@ -194,6 +205,11 @@ impl WasmtimeRuntime {
     }
 
     fn load_module_from_file(&self, path: &Path) -> Result<Module> {
+        let engine = self.engine.as_ref().ok_or_else(|| Error::RuntimeUnavailable {
+            runtime: "wasmtime".to_string(),
+            reason: self.engine_error.clone().unwrap_or_else(|| "engine not initialized".to_string()),
+        })?;
+        
         let bytes = std::fs::read(path).map_err(|e| Error::InvalidBundle {
             path: path.to_path_buf(),
             reason: format!("failed to read module: {}", e),
@@ -210,7 +226,7 @@ impl WasmtimeRuntime {
             });
         }
 
-        Module::new(&self.engine, &bytes).map_err(|e| Error::InvalidBundle {
+        Module::new(engine, &bytes).map_err(|e| Error::InvalidBundle {
             path: path.to_path_buf(),
             reason: format!("failed to compile module: {}", e),
         })
@@ -230,11 +246,11 @@ impl OciRuntime for WasmtimeRuntime {
     }
 
     fn is_available(&self) -> bool {
-        true // wasmtime is pure Rust, always available
+        self.engine.is_some()
     }
 
     fn unavailable_reason(&self) -> Option<String> {
-        None
+        self.engine_error.clone()
     }
 
     async fn create(&self, id: &str, bundle: &Path) -> Result<()> {
@@ -314,8 +330,13 @@ impl OciRuntime for WasmtimeRuntime {
             (container.bundle.clone(), container.module_path.clone())
         };
 
+        // Get engine reference
+        let engine = self.engine.clone().ok_or_else(|| Error::RuntimeUnavailable {
+            runtime: "wasmtime".to_string(),
+            reason: self.engine_error.clone().unwrap_or_else(|| "engine not initialized".to_string()),
+        })?;
+        
         // Load and run module in background
-        let engine = self.engine.clone();
         let id_owned = id.to_string();
         // Clone Arc for sharing with async task
         let containers_ref = Arc::clone(&self.containers);
@@ -418,7 +439,17 @@ impl OciRuntime for WasmtimeRuntime {
     }
 
     async fn wait(&self, id: &str) -> Result<i32> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
+        
         loop {
+            if start.elapsed() > timeout {
+                return Err(Error::Timeout {
+                    operation: format!("wait for container {}", id),
+                    duration: timeout,
+                });
+            }
+            
             let state = self.state(id).await?;
             if state.status == ContainerStatus::Stopped {
                 let containers = self

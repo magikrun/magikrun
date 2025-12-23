@@ -223,21 +223,7 @@ mod linux {
                 reason: reason.to_string(),
             })?;
 
-            // SECURITY: Check container limit before creation
-            {
-                let containers = self
-                    .containers
-                    .read()
-                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
-                if containers.len() >= MAX_CONTAINERS {
-                    return Err(Error::ResourceExhausted(format!(
-                        "maximum container limit reached ({})",
-                        MAX_CONTAINERS
-                    )));
-                }
-            }
-
-            // Check bundle exists
+            // Check bundle exists (before acquiring write lock)
             if !bundle.join("config.json").exists() {
                 return Err(Error::InvalidBundle {
                     path: bundle.to_path_buf(),
@@ -265,12 +251,21 @@ mod linux {
                     reason: format!("build failed: {}", e),
                 })?;
 
-            // Track container
+            // Track container with atomic check-and-insert to prevent TOCTOU race
             {
                 let mut containers = self
                     .containers
                     .write()
                     .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+
+                // SECURITY: Check limit inside write lock to prevent race condition
+                if containers.len() >= MAX_CONTAINERS {
+                    return Err(Error::ResourceExhausted(format!(
+                        "maximum container limit reached ({})",
+                        MAX_CONTAINERS
+                    )));
+                }
+
                 containers.insert(
                     id.to_string(),
                     ContainerInfo {
@@ -386,19 +381,29 @@ mod linux {
         }
 
         async fn wait(&self, id: &str) -> Result<i32> {
-            // Poll for container exit and retrieve exit code
+            // Poll for container exit and retrieve exit code (with timeout)
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
+            
             loop {
+                if start.elapsed() > timeout {
+                    return Err(Error::Timeout {
+                        operation: format!("wait for container {}", id),
+                        duration: timeout,
+                    });
+                }
+                
                 let container = self.load_container(id)?;
 
                 if container.state.status == YoukiStatus::Stopped {
-                    // Get PID to query exit status
-                    // libcontainer doesn't expose exit code directly, so we return 0
-                    // for stopped containers. For actual exit code tracking, the caller
-                    // should use wait4() on the container PID before it exits.
+                    // WARNING: libcontainer doesn't expose exit code directly.
+                    // This always returns 0 for stopped containers.
                     //
-                    // Note: This is a limitation of the libcontainer API.
-                    // Production deployments should use container.pid() + waitpid()
-                    // in a background task started during container.start().
+                    // For actual exit code tracking, callers should:
+                    // 1. Get the container PID via state().pid before the process exits
+                    // 2. Use waitpid() in a background task started during start()
+                    //
+                    // This is a known limitation of the libcontainer API.
                     return Ok(0);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;

@@ -14,21 +14,22 @@
 | Runtime           | Linux | macOS | Windows | Isolation Technology       | Bundle Format         |
 |-------------------|:-----:|:-----:|:-------:|----------------------------|-----------------------|
 | **YoukiRuntime**  |   ✅  |   ❌  |   ❌    | Namespaces + cgroups v2    | `Bundle::OciRuntime`  |
+| **WindowsRuntime**|   ❌  |   ❌  |   ✅    | WSL2 + Job Objects         | `Bundle::OciRuntime`  |
 | **WasmtimeRuntime**|  ✅  |   ✅  |   ✅    | WASM sandbox + WASI        | `Bundle::Wasm`        |
 | **KrunRuntime**   |   ✅  |   ✅  |   ❌    | MicroVM (KVM / HVF)        | `Bundle::MicroVm`     |
 
 ### At a Glance
 
-| Aspect           | YoukiRuntime              | WasmtimeRuntime           | KrunRuntime                |
-|------------------|---------------------------|---------------------------|----------------------------|
-| **Use Case**     | Production containers     | Portable plugins          | Untrusted workloads        |
-| **Isolation**    | Kernel namespaces         | Language-level sandbox    | Hardware VM boundary       |
-| **Startup**      | ~50ms                     | ~5ms                      | ~100ms                     |
-| **Memory**       | Shared with host (cgroup) | 4 GiB max (WASM pages)    | 4 GiB max (VM allocation)  |
-| **CPU Limit**    | cgroups v2                | Fuel (1B ops default)     | vCPUs (8 max)              |
-| **Networking**   | Native Linux netns        | WASI sockets (limited)    | virtio-net (full stack)    |
-| **Filesystem**   | Native rootfs             | WASI preopens only        | virtio-fs                  |
-| **Dependencies** | libcontainer/libcgroups   | Pure Rust (wasmtime)      | libkrun (FFI)              |
+| Aspect           | YoukiRuntime              | WindowsRuntime            | WasmtimeRuntime           | KrunRuntime                |
+|------------------|---------------------------|---------------------------|---------------------------|----------------------------|
+| **Use Case**     | Production containers     | Linux containers on Win   | Portable plugins          | Untrusted workloads        |
+| **Isolation**    | Kernel namespaces         | WSL2 + Job Objects        | Language-level sandbox    | Hardware VM boundary       |
+| **Startup**      | ~50ms                     | ~100ms                    | ~5ms                      | ~100ms                     |
+| **Memory**       | Shared with host (cgroup) | WSL2 VM allocation        | 4 GiB max (WASM pages)    | 4 GiB max (VM allocation)  |
+| **CPU Limit**    | cgroups v2                | WSL2 + Job limits         | Fuel (1B ops default)     | vCPUs (8 max)              |
+| **Networking**   | Native Linux netns        | WSL2 NAT/bridged          | WASI sockets (limited)    | virtio-net (full stack)    |
+| **Filesystem**   | Native rootfs             | WSL2 + 9P/Plan9           | WASI preopens only        | virtio-fs                  |
+| **Dependencies** | libcontainer/libcgroups   | WSL2 + windows-sys        | Pure Rust (wasmtime)      | libkrun (FFI)              |
 
 ### Platform Detection
 
@@ -39,6 +40,8 @@
 | Namespaces        | `/proc/self/ns/*` availability                | YoukiRuntime      |
 | cgroups v2        | `/sys/fs/cgroup/cgroup.controllers` presence  | YoukiRuntime      |
 | Seccomp           | `prctl(PR_GET_SECCOMP)` support               | YoukiRuntime      |
+| Windows 10+       | `GetVersionExW()` version check               | WindowsRuntime    |
+| WSL2              | `wsl --status` or registry check              | WindowsRuntime    |
 | KVM               | `/dev/kvm` device node                        | KrunRuntime       |
 | Hypervisor.framework | `sysctl kern.hv_support`                   | KrunRuntime       |
 | WASM Runtime      | Always available (compiled-in wasmtime)       | WasmtimeRuntime   |
@@ -67,12 +70,19 @@
 │  └───────────────────────────────────────────────────────────┘      │
 ├─────────────────────────────────────────────────────────────────────┤
 │                      Runtime Backends                               │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐              │
-│  │ YoukiRuntime │  │WasmtimeRuntime│  │  KrunRuntime │              │
-│  │   (Linux)    │  │  (Cross-plat) │  │   (MicroVM)  │              │
-│  │  Namespaces  │  │  WASI + Fuel  │  │  KVM / HVF   │              │
-│  │  Cgroups v2  │  │  256MB limit  │  │   4GB limit  │              │
-│  └──────────────┘  └───────────────┘  └──────────────┘              │
+│  ┌──────────────────┐  ┌───────────────────┐  ┌───────────────┐     │
+│  │  YoukiRuntime    │  │  WindowsRuntime   │  │WasmtimeRuntime│     │
+│  │     (Linux)      │  │    (Windows)      │  │  (Cross-plat) │     │
+│  │   Namespaces     │  │  WSL2 + Jobs      │  │  WASI + Fuel  │     │
+│  │   Cgroups v2     │  │  Linux on Win     │  │  256MB limit  │     │
+│  └──────────────────┘  └───────────────────┘  └───────────────┘     │
+│                                                                     │
+│  ┌──────────────────┐                                               │
+│  │   KrunRuntime    │                                               │
+│  │    (MicroVM)     │                                               │
+│  │   KVM / HVF      │                                               │
+│  │    4GB limit     │                                               │
+│  └──────────────────┘                                               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -108,11 +118,12 @@ Implements the [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec
 
 ## Runtime Backends
 
-| Runtime           | Platform       | Isolation            | Use Case              |
-|-------------------|----------------|----------------------|-----------------------|
-| `YoukiRuntime`    | Linux only     | Namespaces + cgroups | Production containers |
-| `WasmtimeRuntime` | Cross-platform | WASM sandbox         | Portable plugins      |
-| `KrunRuntime`     | Linux/macOS    | Hardware VM (KVM/HVF)| Untrusted workloads   |
+| Runtime           | Platform       | Isolation            | Use Case                  |
+|-------------------|----------------|----------------------|---------------------------|
+| `YoukiRuntime`    | Linux only     | Namespaces + cgroups | Production containers     |
+| `WindowsRuntime`  | Windows only   | WSL2 + Job Objects   | Linux containers on Win   |
+| `WasmtimeRuntime` | Cross-platform | WASM sandbox         | Portable plugins          |
+| `KrunRuntime`     | Linux/macOS    | Hardware VM (KVM/HVF)| Untrusted workloads       |
 
 ### Isolation Hierarchy
 
@@ -122,7 +133,7 @@ Defense-in-depth with layered isolation:
 ┌───────────────────────────────────────────────────┐
 │                  KrunRuntime                      │  ← Hardware VM boundary
 │  ┌─────────────────────────────────────────────┐  │
-│  │              YoukiRuntime                   │  │  ← Kernel namespace boundary
+│  │       YoukiRuntime / WindowsRuntime         │  │  ← Kernel/OS boundary
 │  │  ┌───────────────────────────────────────┐  │  │
 │  │  │         WasmtimeRuntime               │  │  │  ← WASM sandbox boundary
 │  │  │                                       │  │  │
