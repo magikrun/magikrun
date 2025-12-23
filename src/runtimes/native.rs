@@ -113,7 +113,7 @@ mod linux {
     use tracing::{debug, info, warn};
 
     use libcontainer::container::builder::ContainerBuilder;
-    use libcontainer::container::{Container, ContainerStatus as YoukiStatus};
+    use libcontainer::container::{Container, ContainerStatus as NativeStatus};
     use libcontainer::signal::Signal as LibcontainerSignal;
     use libcontainer::syscall::syscall::SyscallType;
 
@@ -298,11 +298,11 @@ mod linux {
             let container = self.load_container(id)?;
 
             let status = match container.state.status {
-                YoukiStatus::Creating => ContainerStatus::Creating,
-                YoukiStatus::Created => ContainerStatus::Created,
-                YoukiStatus::Running => ContainerStatus::Running,
-                YoukiStatus::Stopped => ContainerStatus::Stopped,
-                YoukiStatus::Paused => ContainerStatus::Running,
+                NativeStatus::Creating => ContainerStatus::Creating,
+                NativeStatus::Created => ContainerStatus::Created,
+                NativeStatus::Running => ContainerStatus::Running,
+                NativeStatus::Stopped => ContainerStatus::Stopped,
+                NativeStatus::Paused => ContainerStatus::Running,
             };
 
             let pid = container.pid().map(|p| p.as_raw() as u32);
@@ -397,7 +397,7 @@ mod linux {
                 
                 let container = self.load_container(id)?;
 
-                if container.state.status == YoukiStatus::Stopped {
+                if container.state.status == NativeStatus::Stopped {
                     // WARNING: libcontainer doesn't expose exit code directly.
                     // This always returns 0 for stopped containers.
                     //

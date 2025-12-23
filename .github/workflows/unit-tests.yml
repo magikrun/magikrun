@@ -6,7 +6,7 @@
 # Builds libkrun from source as it's not available in Ubuntu repositories.
 #
 # Security Note:
-#   KVM access is enabled on Linux runners for testing YoukiRuntime
+#   KVM access is enabled on Linux runners for testing NativeRuntime
 #   and KrunRuntime functionality.
 #
 # =============================================================================

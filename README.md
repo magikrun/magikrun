@@ -13,14 +13,14 @@
 
 | Runtime           | Linux | macOS | Windows | Isolation Technology       | Bundle Format         |
 |-------------------|:-----:|:-----:|:-------:|----------------------------|-----------------------|
-| **YoukiRuntime**  |   ✅  |   ❌  |   ❌    | Namespaces + cgroups v2    | `Bundle::OciRuntime`  |
+| **NativeRuntime**  |   ✅  |   ❌  |   ❌    | Namespaces + cgroups v2    | `Bundle::OciRuntime`  |
 | **WindowsRuntime**|   ❌  |   ❌  |   ✅    | WSL2 + Job Objects         | `Bundle::OciRuntime`  |
 | **WasmtimeRuntime**|  ✅  |   ✅  |   ✅    | WASM sandbox + WASI        | `Bundle::Wasm`        |
 | **KrunRuntime**   |   ✅  |   ✅  |   ❌    | MicroVM (KVM / HVF)        | `Bundle::MicroVm`     |
 
 ### At a Glance
 
-| Aspect           | YoukiRuntime              | WindowsRuntime            | WasmtimeRuntime           | KrunRuntime                |
+| Aspect           | NativeRuntime              | WindowsRuntime            | WasmtimeRuntime           | KrunRuntime                |
 |------------------|---------------------------|---------------------------|---------------------------|----------------------------|
 | **Use Case**     | Production containers     | Linux containers on Win   | Portable plugins          | Untrusted workloads        |
 | **Isolation**    | Kernel namespaces         | WSL2 + Job Objects        | Language-level sandbox    | Hardware VM boundary       |
@@ -37,9 +37,9 @@
 
 | Capability        | Detection Method                              | Required For      |
 |-------------------|-----------------------------------------------|-------------------|
-| Namespaces        | `/proc/self/ns/*` availability                | YoukiRuntime      |
-| cgroups v2        | `/sys/fs/cgroup/cgroup.controllers` presence  | YoukiRuntime      |
-| Seccomp           | `prctl(PR_GET_SECCOMP)` support               | YoukiRuntime      |
+| Namespaces        | `/proc/self/ns/*` availability                | NativeRuntime      |
+| cgroups v2        | `/sys/fs/cgroup/cgroup.controllers` presence  | NativeRuntime      |
+| Seccomp           | `prctl(PR_GET_SECCOMP)` support               | NativeRuntime      |
 | Windows 10+       | `GetVersionExW()` version check               | WindowsRuntime    |
 | WSL2              | `wsl --status` or registry check              | WindowsRuntime    |
 | KVM               | `/dev/kvm` device node                        | KrunRuntime       |
@@ -71,7 +71,7 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │                      Runtime Backends                               │
 │  ┌──────────────────┐  ┌───────────────────┐  ┌───────────────┐     │
-│  │  YoukiRuntime    │  │  WindowsRuntime   │  │WasmtimeRuntime│     │
+│  │  NativeRuntime    │  │  WindowsRuntime   │  │WasmtimeRuntime│     │
 │  │     (Linux)      │  │    (Windows)      │  │  (Cross-plat) │     │
 │  │   Namespaces     │  │  WSL2 + Jobs      │  │  WASI + Fuel  │     │
 │  │   Cgroups v2     │  │  Linux on Win     │  │  256MB limit  │     │
@@ -120,7 +120,7 @@ Implements the [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec
 
 | Runtime           | Platform       | Isolation            | Use Case                  |
 |-------------------|----------------|----------------------|---------------------------|
-| `YoukiRuntime`    | Linux only     | Namespaces + cgroups | Production containers     |
+| `NativeRuntime`    | Linux only     | Namespaces + cgroups | Production containers     |
 | `WindowsRuntime`  | Windows only   | WSL2 + Job Objects   | Linux containers on Win   |
 | `WasmtimeRuntime` | Cross-platform | WASM sandbox         | Portable plugins          |
 | `KrunRuntime`     | Linux/macOS    | Hardware VM (KVM/HVF)| Untrusted workloads       |
@@ -133,7 +133,7 @@ Defense-in-depth with layered isolation:
 ┌───────────────────────────────────────────────────┐
 │                  KrunRuntime                      │  ← Hardware VM boundary
 │  ┌─────────────────────────────────────────────┐  │
-│  │       YoukiRuntime / WindowsRuntime         │  │  ← Kernel/OS boundary
+│  │       NativeRuntime / WindowsRuntime         │  │  ← Kernel/OS boundary
 │  │  ┌───────────────────────────────────────┐  │  │
 │  │  │         WasmtimeRuntime               │  │  │  ← WASM sandbox boundary
 │  │  │                                       │  │  │
@@ -242,7 +242,7 @@ This crate intentionally excludes pod-level concepts. Each container is independ
 
 | Format              | Contents                        | Runtime           |
 |---------------------|---------------------------------|-------------------|
-| `Bundle::OciRuntime`| rootfs + config.json            | YoukiRuntime      |
+| `Bundle::OciRuntime`| rootfs + config.json            | NativeRuntime      |
 | `Bundle::Wasm`      | .wasm module + WASI config      | WasmtimeRuntime   |
 | `Bundle::MicroVm`   | rootfs + command/env            | KrunRuntime       |
 

@@ -8,7 +8,7 @@
 #
 # Security Note:
 #   - KVM access is required for KrunRuntime tests
-#   - Root/capabilities may be required for YoukiRuntime tests
+#   - Root/capabilities may be required for NativeRuntime tests
 #   - These tests run in isolated environments
 #
 # =============================================================================
