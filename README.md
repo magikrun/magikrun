@@ -7,6 +7,40 @@
 
 `magikrun` provides a pure OCI Runtime Spec compliant interface for container operations across heterogeneous isolation backends. It handles single-container operations only—pod semantics (shared namespaces, pause containers) are delegated to the higher-level [`magikpod`](../magikpod) crate.
 
+## Runtime Flavours Matrix
+
+| Runtime           | Linux | macOS | Windows | Isolation Technology       | Bundle Format         |
+|-------------------|:-----:|:-----:|:-------:|----------------------------|-----------------------|
+| **YoukiRuntime**  |   ✅  |   ❌  |   ❌    | Namespaces + cgroups v2    | `Bundle::OciRuntime`  |
+| **WasmtimeRuntime**|  ✅  |   ✅  |   ✅    | WASM sandbox + WASI        | `Bundle::Wasm`        |
+| **KrunRuntime**   |   ✅  |   ✅  |   ❌    | MicroVM (KVM / HVF)        | `Bundle::MicroVm`     |
+
+### At a Glance
+
+| Aspect           | YoukiRuntime              | WasmtimeRuntime           | KrunRuntime                |
+|------------------|---------------------------|---------------------------|----------------------------|
+| **Use Case**     | Production containers     | Portable plugins          | Untrusted workloads        |
+| **Isolation**    | Kernel namespaces         | Language-level sandbox    | Hardware VM boundary       |
+| **Startup**      | ~50ms                     | ~5ms                      | ~100ms                     |
+| **Memory**       | Shared with host (cgroup) | 4 GiB max (WASM pages)    | 4 GiB max (VM allocation)  |
+| **CPU Limit**    | cgroups v2                | Fuel (1B ops default)     | vCPUs (8 max)              |
+| **Networking**   | Native Linux netns        | WASI sockets (limited)    | virtio-net (full stack)    |
+| **Filesystem**   | Native rootfs             | WASI preopens only        | virtio-fs                  |
+| **Dependencies** | libcontainer/libcgroups   | Pure Rust (wasmtime)      | libkrun (FFI)              |
+
+### Platform Detection
+
+`magikrun` automatically detects available capabilities at runtime:
+
+| Capability        | Detection Method                              | Required For      |
+|-------------------|-----------------------------------------------|-------------------|
+| Namespaces        | `/proc/self/ns/*` availability                | YoukiRuntime      |
+| cgroups v2        | `/sys/fs/cgroup/cgroup.controllers` presence  | YoukiRuntime      |
+| Seccomp           | `prctl(PR_GET_SECCOMP)` support               | YoukiRuntime      |
+| KVM               | `/dev/kvm` device node                        | KrunRuntime       |
+| Hypervisor.framework | `sysctl kern.hv_support`                   | KrunRuntime       |
+| WASM Runtime      | Always available (compiled-in wasmtime)       | WasmtimeRuntime   |
+
 ## Architecture
 
 ```
