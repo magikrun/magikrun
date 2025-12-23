@@ -107,6 +107,12 @@ fn test_oci_platform_matches_current() {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert_eq!(oci_platform, "darwin/arm64");
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    assert_eq!(oci_platform, "windows/amd64");
+
+    // Ensure variable is used on all platforms
+    let _ = oci_platform;
 }
 
 // =============================================================================
