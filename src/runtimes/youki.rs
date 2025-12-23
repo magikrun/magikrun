@@ -53,7 +53,7 @@
 //! ## State Storage
 //!
 //! Container state is stored in:
-//! - Default: `/var/run/magik-oci/containers/<container-id>/`
+//! - Default: `/var/run/magikrun/containers/<container-id>/`
 //! - Custom: Configurable via [`YoukiRuntime::with_state_root`]
 //!
 //! State files include the libcontainer state.json with status, PID, and
@@ -116,7 +116,7 @@ mod linux {
     use libcontainer::syscall::syscall::SyscallType;
 
     /// Directory for storing container state.
-    const STATE_DIR: &str = "/var/run/magik-oci/containers";
+    const STATE_DIR: &str = "/var/run/magikrun/containers";
 
     /// Internal tracking information for created containers.
     #[derive(Debug, Clone)]

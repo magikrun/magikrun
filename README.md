@@ -281,7 +281,7 @@ assert_eq!(retrieved, data);
 ### Storage Layout
 
 ```
-~/.magik-oci/blobs/
+~/.magikrun/blobs/
 └── sha256/
     ├── ab/
     │   ├── abcd1234...  (blob content)

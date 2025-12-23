@@ -120,7 +120,7 @@ jobs:
           name: integration-test-logs-linux-x86_64
           path: |
             target/debug/deps/*.log
-            /tmp/magik-oci/**
+            /tmp/magikrun/**
           retention-days: 5
 
   # ===========================================================================
@@ -188,5 +188,5 @@ jobs:
           name: integration-test-logs-macos
           path: |
             target/debug/deps/*.log
-            /tmp/magik-oci/**
+            /tmp/magikrun/**
           retention-days: 5

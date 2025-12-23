@@ -242,9 +242,9 @@ impl BundleBuilder {
     /// Returns the default bundle path.
     fn default_path() -> PathBuf {
         if let Some(home) = dirs::home_dir() {
-            home.join(".magik-oci").join("bundles")
+            home.join(".magikrun").join("bundles")
         } else {
-            PathBuf::from(".magik-oci").join("bundles")
+            PathBuf::from(".magikrun").join("bundles")
         }
     }
 

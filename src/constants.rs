@@ -199,7 +199,7 @@ pub const EXEC_TIMEOUT: Duration = Duration::from_secs(300);
 // =============================================================================
 //
 // Default subdirectories for runtime state. The base directory is typically
-// `~/.magik-oci` for user mode or `/var/lib/magik-oci` for system mode.
+// `~/.magikrun` for user mode or `/var/lib/magikrun` for system mode.
 //
 // All paths are relative to the configured base directory.
 // =============================================================================

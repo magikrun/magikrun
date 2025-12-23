@@ -1,6 +1,6 @@
 [package]
 name = "magikrun"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "OCI-compliant container runtime abstraction layer with pluggable backends (youki, wasmtime, libkrun)"
 license = "Apache-2.0"

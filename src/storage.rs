@@ -8,7 +8,7 @@
 //! Blobs are stored in a two-level directory structure:
 //!
 //! ```text
-//! ~/.magik-oci/blobs/
+//! ~/.magikrun/blobs/
 //! └── sha256/
 //!     ├── ab/
 //!     │   ├── abcd1234...  (blob content)
@@ -144,9 +144,9 @@ impl BlobStore {
     /// Returns the default storage path.
     fn default_path() -> PathBuf {
         if let Some(home) = dirs::home_dir() {
-            home.join(".magik-oci").join(BLOB_STORE_DIR)
+            home.join(".magikrun").join(BLOB_STORE_DIR)
         } else {
-            PathBuf::from(".magik-oci").join(BLOB_STORE_DIR)
+            PathBuf::from(".magikrun").join(BLOB_STORE_DIR)
         }
     }
 
