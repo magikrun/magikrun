@@ -59,13 +59,13 @@
 //!
 //! [`OciRuntime`]: crate::runtime::OciRuntime
 
-pub mod youki;
-pub mod wasmtime;
 pub mod krun;
+pub mod wasmtime;
+pub mod youki;
 
-pub use self::youki::YoukiRuntime;
-pub use self::wasmtime::WasmtimeRuntime;
 pub use self::krun::KrunRuntime;
+pub use self::wasmtime::WasmtimeRuntime;
+pub use self::youki::YoukiRuntime;
 
 use crate::error::Result;
 use crate::platform::Platform;

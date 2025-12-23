@@ -190,10 +190,7 @@ impl BlobStore {
         };
 
         // SECURITY: Validate hash contains only hex characters to prevent path traversal
-        let safe_hash: String = hash
-            .chars()
-            .filter(|c| c.is_ascii_hexdigit())
-            .collect();
+        let safe_hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).collect();
 
         if safe_hash.len() != hash.len() {
             warn!(
@@ -400,8 +397,9 @@ mod tests {
 
         // Try to store with wrong digest - should fail
         let data = b"hello world";
-        let wrong_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-        
+        let wrong_digest =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
         let result = store.put_blob(wrong_digest, data);
         assert!(result.is_err(), "Should reject mismatched digest");
     }

@@ -307,7 +307,7 @@ impl BundleBuilder {
 
         // Generate OCI runtime config with namespace paths
         let mut oci_config = self.generate_oci_spec(config);
-        
+
         // Inject namespace paths for joining
         if let Some(linux) = &mut oci_config.linux {
             for ns in &mut linux.namespaces {
@@ -323,7 +323,10 @@ impl BundleBuilder {
         fs::write(&config_path, config_json)
             .map_err(|e| Error::BundleBuildFailed(format!("failed to write config.json: {}", e)))?;
 
-        info!("Built OCI bundle with namespace joining: {}", bundle_dir.display());
+        info!(
+            "Built OCI bundle with namespace joining: {}",
+            bundle_dir.display()
+        );
 
         Ok(Bundle::OciRuntime {
             path: bundle_dir,
@@ -364,10 +367,13 @@ impl BundleBuilder {
             let decoder = GzDecoder::new(&data[..]);
             let mut archive = Archive::new(decoder);
 
-            for entry in archive.entries().map_err(|e| Error::LayerExtractionFailed {
-                digest: layer.digest.clone(),
-                reason: e.to_string(),
-            })? {
+            for entry in archive
+                .entries()
+                .map_err(|e| Error::LayerExtractionFailed {
+                    digest: layer.digest.clone(),
+                    reason: e.to_string(),
+                })?
+            {
                 let mut entry = entry.map_err(|e| Error::LayerExtractionFailed {
                     digest: layer.digest.clone(),
                     reason: e.to_string(),
@@ -390,7 +396,9 @@ impl BundleBuilder {
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if filename.starts_with(".wh.") {
                     let target = filename.strip_prefix(".wh.").unwrap();
-                    let target_path = rootfs.join(path.parent().unwrap_or(Path::new(""))).join(target);
+                    let target_path = rootfs
+                        .join(path.parent().unwrap_or(Path::new("")))
+                        .join(target);
                     if target_path.exists() {
                         let _ = fs::remove_file(&target_path);
                         let _ = fs::remove_dir_all(&target_path);
@@ -439,7 +447,10 @@ impl BundleBuilder {
                                 }
                                 if depth < 0 {
                                     return Err(Error::PathTraversal {
-                                        path: format!("symlink target escapes rootfs: {}", target_str),
+                                        path: format!(
+                                            "symlink target escapes rootfs: {}",
+                                            target_str
+                                        ),
                                     });
                                 }
                             }
@@ -448,10 +459,12 @@ impl BundleBuilder {
                 }
 
                 // Unpack
-                entry.unpack_in(rootfs).map_err(|e| Error::LayerExtractionFailed {
-                    digest: layer.digest.clone(),
-                    reason: e.to_string(),
-                })?;
+                entry
+                    .unpack_in(rootfs)
+                    .map_err(|e| Error::LayerExtractionFailed {
+                        digest: layer.digest.clone(),
+                        reason: e.to_string(),
+                    })?;
             }
         }
 
@@ -468,7 +481,9 @@ impl BundleBuilder {
 
         // Add PATH if not set
         if !config.env.contains_key("PATH") {
-            env.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());
+            env.push(
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+            );
         }
 
         let args = config
@@ -490,17 +505,38 @@ impl BundleBuilder {
                 },
                 args,
                 env,
-                cwd: config.working_dir.clone().unwrap_or_else(|| "/".to_string()),
+                cwd: config
+                    .working_dir
+                    .clone()
+                    .unwrap_or_else(|| "/".to_string()),
             },
-            hostname: config.hostname.clone().unwrap_or_else(|| "container".to_string()),
+            hostname: config
+                .hostname
+                .clone()
+                .unwrap_or_else(|| "container".to_string()),
             mounts: self.default_mounts(),
             linux: Some(OciLinux {
                 namespaces: vec![
-                    OciNamespace { ns_type: "pid".to_string(), path: None },
-                    OciNamespace { ns_type: "network".to_string(), path: None },
-                    OciNamespace { ns_type: "ipc".to_string(), path: None },
-                    OciNamespace { ns_type: "uts".to_string(), path: None },
-                    OciNamespace { ns_type: "mount".to_string(), path: None },
+                    OciNamespace {
+                        ns_type: "pid".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "network".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "ipc".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "uts".to_string(),
+                        path: None,
+                    },
+                    OciNamespace {
+                        ns_type: "mount".to_string(),
+                        path: None,
+                    },
                 ],
                 resources: None,
             }),
@@ -520,19 +556,32 @@ impl BundleBuilder {
                 destination: "/dev".to_string(),
                 mount_type: "tmpfs".to_string(),
                 source: "tmpfs".to_string(),
-                options: vec!["nosuid".to_string(), "strictatime".to_string(), "mode=755".to_string()],
+                options: vec![
+                    "nosuid".to_string(),
+                    "strictatime".to_string(),
+                    "mode=755".to_string(),
+                ],
             },
             OciMount {
                 destination: "/dev/pts".to_string(),
                 mount_type: "devpts".to_string(),
                 source: "devpts".to_string(),
-                options: vec!["nosuid".to_string(), "noexec".to_string(), "newinstance".to_string()],
+                options: vec![
+                    "nosuid".to_string(),
+                    "noexec".to_string(),
+                    "newinstance".to_string(),
+                ],
             },
             OciMount {
                 destination: "/sys".to_string(),
                 mount_type: "sysfs".to_string(),
                 source: "sysfs".to_string(),
-                options: vec!["nosuid".to_string(), "noexec".to_string(), "nodev".to_string(), "ro".to_string()],
+                options: vec![
+                    "nosuid".to_string(),
+                    "noexec".to_string(),
+                    "nodev".to_string(),
+                    "ro".to_string(),
+                ],
             },
         ]
     }
@@ -758,10 +807,13 @@ pub fn extract_layers_to_rootfs(
         let decoder = GzDecoder::new(&data[..]);
         let mut archive = Archive::new(decoder);
 
-        for entry in archive.entries().map_err(|e| Error::LayerExtractionFailed {
-            digest: layer.digest.clone(),
-            reason: e.to_string(),
-        })? {
+        for entry in archive
+            .entries()
+            .map_err(|e| Error::LayerExtractionFailed {
+                digest: layer.digest.clone(),
+                reason: e.to_string(),
+            })?
+        {
             let mut entry = entry.map_err(|e| Error::LayerExtractionFailed {
                 digest: layer.digest.clone(),
                 reason: e.to_string(),
@@ -784,7 +836,9 @@ pub fn extract_layers_to_rootfs(
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if filename.starts_with(".wh.") {
                 let target = filename.strip_prefix(".wh.").unwrap();
-                let target_path = rootfs.join(path.parent().unwrap_or(Path::new(""))).join(target);
+                let target_path = rootfs
+                    .join(path.parent().unwrap_or(Path::new("")))
+                    .join(target);
                 if target_path.exists() {
                     let _ = fs::remove_file(&target_path);
                     let _ = fs::remove_dir_all(&target_path);
@@ -842,10 +896,12 @@ pub fn extract_layers_to_rootfs(
             }
 
             // Unpack
-            entry.unpack_in(rootfs).map_err(|e| Error::LayerExtractionFailed {
-                digest: layer.digest.clone(),
-                reason: e.to_string(),
-            })?;
+            entry
+                .unpack_in(rootfs)
+                .map_err(|e| Error::LayerExtractionFailed {
+                    digest: layer.digest.clone(),
+                    reason: e.to_string(),
+                })?;
         }
     }
 

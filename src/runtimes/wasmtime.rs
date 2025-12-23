@@ -99,10 +99,12 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use wasmtime::{Config, Engine, Linker, Module, Store};
-use wasmtime_wasi::preview1;
 use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::preview1;
 
-use crate::constants::{validate_container_id, DEFAULT_WASM_FUEL, MAX_CONTAINERS, MAX_WASM_MODULE_SIZE};
+use crate::constants::{
+    DEFAULT_WASM_FUEL, MAX_CONTAINERS, MAX_WASM_MODULE_SIZE, validate_container_id,
+};
 
 /// Wasmtime OCI runtime for WebAssembly module execution.
 ///
@@ -149,7 +151,7 @@ impl WasmtimeRuntime {
         let mut config = Config::new();
         config.consume_fuel(true); // Enable fuel for bounded execution
         config.wasm_memory64(false);
-        
+
         let engine = Engine::new(&config).expect("Failed to create wasmtime engine");
 
         Self {
@@ -163,7 +165,7 @@ impl WasmtimeRuntime {
     fn load_module(&self, bundle: &Path) -> Result<(Module, PathBuf)> {
         // Look for module.wasm in bundle
         let module_path = bundle.join("module.wasm");
-        
+
         if !module_path.exists() {
             // Try to find any .wasm file
             let wasm_files: Vec<_> = std::fs::read_dir(bundle)
@@ -236,14 +238,16 @@ impl OciRuntime for WasmtimeRuntime {
     }
 
     async fn create(&self, id: &str, bundle: &Path) -> Result<()> {
-        debug!("Creating WASM container {} from bundle {}", id, bundle.display());
+        debug!(
+            "Creating WASM container {} from bundle {}",
+            id,
+            bundle.display()
+        );
 
         // SECURITY: Validate container ID format
-        validate_container_id(id).map_err(|reason| {
-            Error::InvalidContainerId {
-                id: id.to_string(),
-                reason: reason.to_string(),
-            }
+        validate_container_id(id).map_err(|reason| Error::InvalidContainerId {
+            id: id.to_string(),
+            reason: reason.to_string(),
         })?;
 
         // Validate bundle has a WASM module and get the resolved path
@@ -251,9 +255,10 @@ impl OciRuntime for WasmtimeRuntime {
 
         // Register container
         {
-            let mut containers = self.containers.write().map_err(|e| {
-                Error::Internal(format!("lock poisoned: {}", e))
-            })?;
+            let mut containers = self
+                .containers
+                .write()
+                .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
             // SECURITY: Enforce container limit to prevent unbounded memory growth
             if containers.len() >= MAX_CONTAINERS {
@@ -267,13 +272,16 @@ impl OciRuntime for WasmtimeRuntime {
                 return Err(Error::ContainerAlreadyExists(id.to_string()));
             }
 
-            containers.insert(id.to_string(), WasmContainer {
-                bundle: bundle.to_path_buf(),
-                module_path,
-                status: ContainerStatus::Created,
-                started_at: None,
-                exit_code: None,
-            });
+            containers.insert(
+                id.to_string(),
+                WasmContainer {
+                    bundle: bundle.to_path_buf(),
+                    module_path,
+                    status: ContainerStatus::Created,
+                    started_at: None,
+                    exit_code: None,
+                },
+            );
         }
 
         info!("Created WASM container {}", id);
@@ -284,13 +292,14 @@ impl OciRuntime for WasmtimeRuntime {
         debug!("Starting WASM container {}", id);
 
         let (bundle, module_path) = {
-            let mut containers = self.containers.write().map_err(|e| {
-                Error::Internal(format!("lock poisoned: {}", e))
-            })?;
+            let mut containers = self
+                .containers
+                .write()
+                .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-            let container = containers.get_mut(id).ok_or_else(|| {
-                Error::ContainerNotFound(id.to_string())
-            })?;
+            let container = containers
+                .get_mut(id)
+                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
             if container.status != ContainerStatus::Created {
                 return Err(Error::InvalidState {
@@ -313,10 +322,13 @@ impl OciRuntime for WasmtimeRuntime {
 
         tokio::spawn(async move {
             let result = Self::run_module_blocking(&engine, &module_path, &bundle);
-            
+
             // Update container state with exit code
             let (exit_code, log_msg) = match result {
-                Ok(code) => (code, format!("WASM container {} exited with code {}", id_owned, code)),
+                Ok(code) => (
+                    code,
+                    format!("WASM container {} exited with code {}", id_owned, code),
+                ),
                 Err(e) => (-1, format!("WASM container {} failed: {}", id_owned, e)),
             };
 
@@ -340,13 +352,14 @@ impl OciRuntime for WasmtimeRuntime {
     }
 
     async fn state(&self, id: &str) -> Result<ContainerState> {
-        let containers = self.containers.read().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let containers = self
+            .containers
+            .read()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         Ok(ContainerState {
             oci_version: "1.0.2".to_string(),
@@ -361,13 +374,14 @@ impl OciRuntime for WasmtimeRuntime {
     async fn kill(&self, id: &str, signal: Signal, _all: bool) -> Result<()> {
         debug!("Killing WASM container {} with {:?}", id, signal);
 
-        let mut containers = self.containers.write().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let mut containers = self
+            .containers
+            .write()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get_mut(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get_mut(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         // WASM doesn't have signal support, just mark as stopped
         container.status = ContainerStatus::Stopped;
@@ -380,13 +394,14 @@ impl OciRuntime for WasmtimeRuntime {
     async fn delete(&self, id: &str, force: bool) -> Result<()> {
         debug!("Deleting WASM container {} (force={})", id, force);
 
-        let mut containers = self.containers.write().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let mut containers = self
+            .containers
+            .write()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         if !force && container.status == ContainerStatus::Running {
             return Err(Error::InvalidState {
@@ -406,12 +421,13 @@ impl OciRuntime for WasmtimeRuntime {
         loop {
             let state = self.state(id).await?;
             if state.status == ContainerStatus::Stopped {
-                let containers = self.containers.read().map_err(|e| {
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
-                let container = containers.get(id).ok_or_else(|| {
-                    Error::ContainerNotFound(id.to_string())
-                })?;
+                let containers = self
+                    .containers
+                    .read()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                let container = containers
+                    .get(id)
+                    .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
                 return Ok(container.exit_code.unwrap_or(0));
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -456,17 +472,21 @@ impl WasmtimeRuntime {
         })?;
 
         // Instantiate and run
-        let instance = linker.instantiate(&mut store, &module).map_err(|e| Error::StartFailed {
-            id: bundle.to_string_lossy().to_string(),
-            reason: format!("failed to instantiate: {}", e),
-        })?;
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .map_err(|e| Error::StartFailed {
+                id: bundle.to_string_lossy().to_string(),
+                reason: format!("failed to instantiate: {}", e),
+            })?;
 
         // Call _start if it exists
         if let Some(start) = instance.get_func(&mut store, "_start") {
-            start.call(&mut store, &[], &mut []).map_err(|e| Error::StartFailed {
-                id: bundle.to_string_lossy().to_string(),
-                reason: format!("_start failed: {}", e),
-            })?;
+            start
+                .call(&mut store, &[], &mut [])
+                .map_err(|e| Error::StartFailed {
+                    id: bundle.to_string_lossy().to_string(),
+                    reason: format!("_start failed: {}", e),
+                })?;
         }
 
         Ok(0)

@@ -23,7 +23,7 @@ fn test_container_status_equality() {
     assert_eq!(ContainerStatus::Created, ContainerStatus::Created);
     assert_eq!(ContainerStatus::Running, ContainerStatus::Running);
     assert_eq!(ContainerStatus::Stopped, ContainerStatus::Stopped);
-    
+
     assert_ne!(ContainerStatus::Creating, ContainerStatus::Created);
     assert_ne!(ContainerStatus::Running, ContainerStatus::Stopped);
 }
@@ -47,7 +47,7 @@ fn test_container_status_serialization() {
     // JSON serialization should produce lowercase strings
     let json = serde_json::to_string(&ContainerStatus::Running).unwrap();
     assert_eq!(json, "\"running\"");
-    
+
     let json = serde_json::to_string(&ContainerStatus::Stopped).unwrap();
     assert_eq!(json, "\"stopped\"");
 }
@@ -56,7 +56,7 @@ fn test_container_status_serialization() {
 fn test_container_status_deserialization() {
     let status: ContainerStatus = serde_json::from_str("\"created\"").unwrap();
     assert_eq!(status, ContainerStatus::Created);
-    
+
     let status: ContainerStatus = serde_json::from_str("\"running\"").unwrap();
     assert_eq!(status, ContainerStatus::Running);
 }
@@ -75,7 +75,7 @@ fn test_container_state_minimal() {
         bundle: "/tmp/bundle".to_string(),
         annotations: std::collections::HashMap::new(),
     };
-    
+
     assert_eq!(state.oci_version, "1.0.2");
     assert_eq!(state.id, "test-container");
     assert_eq!(state.status, ContainerStatus::Created);
@@ -92,7 +92,7 @@ fn test_container_state_with_pid() {
         bundle: "/var/run/containers/running-container".to_string(),
         annotations: std::collections::HashMap::new(),
     };
-    
+
     assert_eq!(state.pid, Some(12345));
     assert_eq!(state.status, ContainerStatus::Running);
 }
@@ -102,7 +102,7 @@ fn test_container_state_with_annotations() {
     let mut annotations = std::collections::HashMap::new();
     annotations.insert("org.example.key".to_string(), "value".to_string());
     annotations.insert("another.key".to_string(), "another value".to_string());
-    
+
     let state = ContainerState {
         oci_version: "1.0.2".to_string(),
         id: "annotated-container".to_string(),
@@ -111,9 +111,12 @@ fn test_container_state_with_annotations() {
         bundle: "/tmp/bundle".to_string(),
         annotations,
     };
-    
+
     assert_eq!(state.annotations.len(), 2);
-    assert_eq!(state.annotations.get("org.example.key"), Some(&"value".to_string()));
+    assert_eq!(
+        state.annotations.get("org.example.key"),
+        Some(&"value".to_string())
+    );
 }
 
 #[test]
@@ -126,7 +129,7 @@ fn test_container_state_clone() {
         bundle: "/bundle".to_string(),
         annotations: std::collections::HashMap::new(),
     };
-    
+
     let cloned = state.clone();
     assert_eq!(state.id, cloned.id);
     assert_eq!(state.status, cloned.status);
@@ -143,9 +146,9 @@ fn test_container_state_serialization() {
         bundle: "/tmp/bundle".to_string(),
         annotations: std::collections::HashMap::new(),
     };
-    
+
     let json = serde_json::to_string(&state).unwrap();
-    
+
     // OCI spec uses camelCase
     assert!(json.contains("\"ociVersion\"") || json.contains("\"oci_version\""));
     assert!(json.contains("\"1.0.2\""));
@@ -168,9 +171,9 @@ fn test_container_state_deserialization() {
         "bundle": "/tmp/bundle",
         "annotations": {}
     }"#;
-    
+
     let state: ContainerState = serde_json::from_str(json).unwrap();
-    
+
     assert_eq!(state.oci_version, "1.0.2");
     assert_eq!(state.id, "test-container");
     assert_eq!(state.status, ContainerStatus::Created);
@@ -223,15 +226,15 @@ fn test_signal_debug() {
 #[test]
 fn test_valid_state_transitions_documented() {
     // Document valid transitions as assertions on status values
-    
+
     // create() -> Creating (transient) -> Created
     let after_create = ContainerStatus::Created;
     assert_eq!(format!("{}", after_create), "created");
-    
+
     // start() -> Running
     let after_start = ContainerStatus::Running;
     assert_eq!(format!("{}", after_start), "running");
-    
+
     // kill() or natural exit -> Stopped
     let after_kill = ContainerStatus::Stopped;
     assert_eq!(format!("{}", after_kill), "stopped");
@@ -246,14 +249,14 @@ fn test_all_statuses_covered() {
         ContainerStatus::Running,
         ContainerStatus::Stopped,
     ];
-    
+
     // Each serializes to a unique string
     let mut seen = std::collections::HashSet::new();
     for status in &statuses {
         let s = format!("{}", status);
         assert!(seen.insert(s), "duplicate status string");
     }
-    
+
     assert_eq!(seen.len(), 4, "should have exactly 4 unique statuses");
 }
 
@@ -268,13 +271,13 @@ fn test_all_signals_covered() {
         Signal::Usr1, // Application-defined
         Signal::Usr2, // Application-defined
     ];
-    
+
     // Each has a unique display
     let mut seen = std::collections::HashSet::new();
     for signal in &signals {
         let s = format!("{}", signal);
         assert!(seen.insert(s), "duplicate signal string");
     }
-    
+
     assert_eq!(seen.len(), 6, "should have exactly 6 unique signals");
 }

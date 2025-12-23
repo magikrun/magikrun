@@ -76,7 +76,7 @@
 //!
 //! [`BlobStore::put_blob`]: crate::storage::BlobStore::put_blob
 
-use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_IMAGE_REF_LEN, MAX_LAYERS, MAX_LAYER_SIZE};
+use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS};
 use crate::error::{Error, Result};
 use crate::platform::Platform;
 use crate::storage::BlobStore;
@@ -262,10 +262,12 @@ pub async fn pull_image(image_ref: &str, storage: &Arc<BlobStore>) -> Result<Ima
     info!("Pulling image: {}", image_ref);
 
     // Parse reference
-    let reference: Reference = image_ref.parse().map_err(|e| Error::InvalidImageReference {
-        reference: image_ref.to_string(),
-        reason: format!("{}", e),
-    })?;
+    let reference: Reference = image_ref
+        .parse()
+        .map_err(|e| Error::InvalidImageReference {
+            reference: image_ref.to_string(),
+            reason: format!("{}", e),
+        })?;
 
     // Create client
     let client = Client::new(ClientConfig {
@@ -427,12 +429,11 @@ async fn resolve_manifest(
                 manifest_desc.digest
             );
 
-            let platform_ref: Reference = digest_ref_str.parse().map_err(|e| {
-                Error::ImagePullFailed {
+            let platform_ref: Reference =
+                digest_ref_str.parse().map_err(|e| Error::ImagePullFailed {
                     reference: reference.to_string(),
                     reason: format!("failed to build digest reference: {}", e),
-                }
-            })?;
+                })?;
 
             let (platform_manifest, _) =
                 client
@@ -509,14 +510,18 @@ mod tests {
     #[test]
     fn test_reference_validation() {
         // Valid
-        assert!("nginx:latest"
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || ":".contains(c)));
+        assert!(
+            "nginx:latest"
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ":".contains(c))
+        );
 
         // Contains space - invalid
         let bad_ref = "nginx :latest";
-        assert!(!bad_ref
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/:.-_@".contains(c)));
+        assert!(
+            !bad_ref
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/:.-_@".contains(c))
+        );
     }
 }

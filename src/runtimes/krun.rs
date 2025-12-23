@@ -96,7 +96,9 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use tracing::{debug, info};
 
-use crate::constants::{validate_container_id, DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS};
+use crate::constants::{
+    DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS, validate_container_id,
+};
 
 /// libkrun context handle.
 type KrunCtx = u32;
@@ -165,7 +167,7 @@ impl KrunRuntime {
     /// Configures a VM from a bundle.
     fn configure_vm(&self, ctx: KrunCtx, bundle: &Path) -> Result<()> {
         let rootfs = bundle.join("rootfs");
-        
+
         if !rootfs.exists() {
             return Err(Error::InvalidBundle {
                 path: bundle.to_path_buf(),
@@ -186,8 +188,8 @@ impl KrunRuntime {
         }
 
         // Set root filesystem
-        let rootfs_cstr = CString::new(rootfs.to_string_lossy().as_bytes())
-            .map_err(|_| Error::CreateFailed {
+        let rootfs_cstr =
+            CString::new(rootfs.to_string_lossy().as_bytes()).map_err(|_| Error::CreateFailed {
                 id: bundle.to_string_lossy().to_string(),
                 reason: "invalid rootfs path".to_string(),
             })?;
@@ -214,14 +216,14 @@ impl KrunRuntime {
         };
 
         let init_cstr = CString::new(init_path).unwrap();
-        
+
         // SAFETY: krun_set_exec is safe with valid ctx and path
         let ret = unsafe {
             krun_sys::krun_set_exec(
                 ctx,
                 init_cstr.as_ptr(),
-                std::ptr::null(),  // No args
-                std::ptr::null(),  // No env
+                std::ptr::null(), // No args
+                std::ptr::null(), // No env
             )
         };
         if ret < 0 {
@@ -256,21 +258,24 @@ impl OciRuntime for KrunRuntime {
     }
 
     async fn create(&self, id: &str, bundle: &Path) -> Result<()> {
-        debug!("Creating microVM container {} from bundle {}", id, bundle.display());
+        debug!(
+            "Creating microVM container {} from bundle {}",
+            id,
+            bundle.display()
+        );
 
         // SECURITY: Validate container ID format
-        validate_container_id(id).map_err(|reason| {
-            Error::InvalidContainerId {
-                id: id.to_string(),
-                reason: reason.to_string(),
-            }
+        validate_container_id(id).map_err(|reason| Error::InvalidContainerId {
+            id: id.to_string(),
+            reason: reason.to_string(),
         })?;
 
         // SECURITY: Check container limit before creating context
         {
-            let containers = self.containers.read().map_err(|e| {
-                Error::Internal(format!("lock poisoned: {}", e))
-            })?;
+            let containers = self
+                .containers
+                .read()
+                .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
             if containers.len() >= MAX_CONTAINERS {
                 return Err(Error::ResourceExhausted(format!(
                     "maximum container limit reached ({})",
@@ -318,11 +323,14 @@ impl OciRuntime for KrunRuntime {
                 return Err(Error::ContainerAlreadyExists(id.to_string()));
             }
 
-            containers.insert(id.to_string(), VmContainer {
-                bundle: bundle.to_path_buf(),
-                status: ContainerStatus::Created,
-                ctx: Some(ctx),
-            });
+            containers.insert(
+                id.to_string(),
+                VmContainer {
+                    bundle: bundle.to_path_buf(),
+                    status: ContainerStatus::Created,
+                    ctx: Some(ctx),
+                },
+            );
         }
 
         info!("Created microVM container {}", id);
@@ -333,13 +341,14 @@ impl OciRuntime for KrunRuntime {
         debug!("Starting microVM container {}", id);
 
         let ctx = {
-            let mut containers = self.containers.write().map_err(|e| {
-                Error::Internal(format!("lock poisoned: {}", e))
-            })?;
+            let mut containers = self
+                .containers
+                .write()
+                .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-            let container = containers.get_mut(id).ok_or_else(|| {
-                Error::ContainerNotFound(id.to_string())
-            })?;
+            let container = containers
+                .get_mut(id)
+                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
             if container.status != ContainerStatus::Created {
                 return Err(Error::InvalidState {
@@ -350,7 +359,9 @@ impl OciRuntime for KrunRuntime {
             }
 
             container.status = ContainerStatus::Running;
-            container.ctx.ok_or_else(|| Error::Internal("no context".to_string()))?
+            container
+                .ctx
+                .ok_or_else(|| Error::Internal("no context".to_string()))?
         };
 
         // Start the VM
@@ -368,13 +379,14 @@ impl OciRuntime for KrunRuntime {
     }
 
     async fn state(&self, id: &str) -> Result<ContainerState> {
-        let containers = self.containers.read().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let containers = self
+            .containers
+            .read()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         Ok(ContainerState {
             oci_version: "1.0.2".to_string(),
@@ -389,13 +401,14 @@ impl OciRuntime for KrunRuntime {
     async fn kill(&self, id: &str, signal: Signal, _all: bool) -> Result<()> {
         debug!("Killing microVM container {} with {:?}", id, signal);
 
-        let mut containers = self.containers.write().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let mut containers = self
+            .containers
+            .write()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get_mut(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get_mut(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         // For microVMs, we just free the context (stops the VM)
         if let Some(ctx) = container.ctx.take() {
@@ -412,13 +425,14 @@ impl OciRuntime for KrunRuntime {
     async fn delete(&self, id: &str, force: bool) -> Result<()> {
         debug!("Deleting microVM container {} (force={})", id, force);
 
-        let mut containers = self.containers.write().map_err(|e| {
-            Error::Internal(format!("lock poisoned: {}", e))
-        })?;
+        let mut containers = self
+            .containers
+            .write()
+            .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
-        let container = containers.get_mut(id).ok_or_else(|| {
-            Error::ContainerNotFound(id.to_string())
-        })?;
+        let container = containers
+            .get_mut(id)
+            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
         if !force && container.status == ContainerStatus::Running {
             return Err(Error::InvalidState {

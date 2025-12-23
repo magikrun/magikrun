@@ -67,7 +67,10 @@ fn test_manifest_size_reasonable() {
 #[test]
 fn test_config_size_reasonable() {
     // Image configs with extensive history/labels
-    assert!(MAX_CONFIG_SIZE >= 100 * 1024, "config limit too restrictive");
+    assert!(
+        MAX_CONFIG_SIZE >= 100 * 1024,
+        "config limit too restrictive"
+    );
     assert!(
         MAX_CONFIG_SIZE <= 10 * 1024 * 1024,
         "config limit too permissive"
@@ -123,10 +126,7 @@ fn test_vm_memory_limits_ordered() {
 
 #[test]
 fn test_vcpu_limits_ordered() {
-    assert!(
-        DEFAULT_VCPUS <= MAX_VCPUS,
-        "default vCPUs should be <= max"
-    );
+    assert!(DEFAULT_VCPUS <= MAX_VCPUS, "default vCPUs should be <= max");
     assert!(DEFAULT_VCPUS >= 1, "default vCPUs should be at least 1");
 }
 
@@ -237,8 +237,14 @@ fn test_wasm_fuel_reasonable() {
 #[test]
 fn test_directory_names_valid() {
     // Directory names should be valid path components
-    assert!(!BLOB_STORE_DIR.contains('/'), "blob store dir has path separator");
-    assert!(!BLOB_STORE_DIR.contains('\\'), "blob store dir has backslash");
+    assert!(
+        !BLOB_STORE_DIR.contains('/'),
+        "blob store dir has path separator"
+    );
+    assert!(
+        !BLOB_STORE_DIR.contains('\\'),
+        "blob store dir has backslash"
+    );
     assert!(!BLOB_STORE_DIR.is_empty(), "blob store dir is empty");
 }
 
@@ -298,7 +304,7 @@ fn test_validate_container_id_too_long() {
     let result = validate_container_id(&long_id);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "container ID exceeds maximum length");
-    
+
     // At the limit should be OK
     let at_limit = "a".repeat(MAX_CONTAINER_ID_LEN);
     assert!(validate_container_id(&at_limit).is_ok());
@@ -310,12 +316,12 @@ fn test_validate_container_id_invalid_characters() {
     assert!(validate_container_id("../escape").is_err());
     assert!(validate_container_id("path/to/container").is_err());
     assert!(validate_container_id("container.name").is_err());
-    
+
     // Special characters
     assert!(validate_container_id("container@host").is_err());
     assert!(validate_container_id("container:tag").is_err());
     assert!(validate_container_id("container name").is_err()); // space
-    
+
     // Control characters
     assert!(validate_container_id("container\n").is_err());
     assert!(validate_container_id("container\0").is_err());

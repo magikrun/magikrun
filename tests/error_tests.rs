@@ -14,8 +14,11 @@ use std::time::Duration;
 fn test_container_not_found_display() {
     let err = Error::ContainerNotFound("test-container".to_string());
     let msg = format!("{}", err);
-    
-    assert!(msg.contains("test-container"), "should include container ID");
+
+    assert!(
+        msg.contains("test-container"),
+        "should include container ID"
+    );
     assert!(msg.contains("not found"), "should indicate not found");
 }
 
@@ -23,8 +26,11 @@ fn test_container_not_found_display() {
 fn test_container_already_exists_display() {
     let err = Error::ContainerAlreadyExists("existing-container".to_string());
     let msg = format!("{}", err);
-    
-    assert!(msg.contains("existing-container"), "should include container ID");
+
+    assert!(
+        msg.contains("existing-container"),
+        "should include container ID"
+    );
     assert!(msg.contains("already exists"), "should indicate exists");
 }
 
@@ -35,18 +41,27 @@ fn test_invalid_container_id_display() {
         reason: "contains invalid characters".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("bad/../id"), "should include container ID");
-    assert!(msg.contains("invalid container ID"), "should indicate invalid ID");
-    assert!(msg.contains("contains invalid characters"), "should include reason");
+    assert!(
+        msg.contains("invalid container ID"),
+        "should indicate invalid ID"
+    );
+    assert!(
+        msg.contains("contains invalid characters"),
+        "should include reason"
+    );
 }
 
 #[test]
 fn test_resource_exhausted_display() {
     let err = Error::ResourceExhausted("maximum container limit reached (1024)".to_string());
     let msg = format!("{}", err);
-    
-    assert!(msg.contains("resource exhausted"), "should indicate resource exhausted");
+
+    assert!(
+        msg.contains("resource exhausted"),
+        "should indicate resource exhausted"
+    );
     assert!(msg.contains("1024"), "should include limit");
 }
 
@@ -57,7 +72,7 @@ fn test_create_failed_display() {
         reason: "rootfs not found".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container ID");
     assert!(msg.contains("rootfs not found"), "should include reason");
 }
@@ -69,9 +84,12 @@ fn test_start_failed_display() {
         reason: "process already running".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container ID");
-    assert!(msg.contains("process already running"), "should include reason");
+    assert!(
+        msg.contains("process already running"),
+        "should include reason"
+    );
 }
 
 #[test]
@@ -82,7 +100,7 @@ fn test_invalid_state_display() {
         expected: "created".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container ID");
     assert!(msg.contains("stopped"), "should include current state");
     assert!(msg.contains("created"), "should include expected state");
@@ -95,7 +113,7 @@ fn test_signal_failed_display() {
         reason: "process not found".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container ID");
     assert!(msg.contains("process not found"), "should include reason");
 }
@@ -107,9 +125,12 @@ fn test_delete_failed_display() {
         reason: "container still running".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container ID");
-    assert!(msg.contains("container still running"), "should include reason");
+    assert!(
+        msg.contains("container still running"),
+        "should include reason"
+    );
 }
 
 // =============================================================================
@@ -123,7 +144,7 @@ fn test_invalid_image_reference_display() {
         reason: "double colon not allowed".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("invalid::ref"), "should include reference");
     assert!(msg.contains("double colon"), "should include reason");
 }
@@ -135,7 +156,7 @@ fn test_image_pull_failed_display() {
         reason: "connection refused".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("alpine"), "should include image name");
     assert!(msg.contains("connection refused"), "should include reason");
 }
@@ -147,7 +168,7 @@ fn test_layer_extraction_failed_display() {
         reason: "corrupt gzip stream".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("sha256:abc123"), "should include digest");
     assert!(msg.contains("corrupt gzip"), "should include reason");
 }
@@ -159,7 +180,7 @@ fn test_image_too_large_display() {
         limit: 4_000_000_000,
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("5000000000"), "should include size");
     assert!(msg.contains("4000000000"), "should include limit");
 }
@@ -170,7 +191,7 @@ fn test_path_traversal_display() {
         path: "../../../etc/passwd".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("path traversal"), "should indicate traversal");
     // Note: We include the path for debugging, but in production logs
     // this might be sanitized
@@ -184,7 +205,7 @@ fn test_path_traversal_display() {
 fn test_bundle_build_failed_display() {
     let err = Error::BundleBuildFailed("missing layers".to_string());
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("missing layers"), "should include reason");
 }
 
@@ -195,7 +216,7 @@ fn test_invalid_bundle_display() {
         reason: "config.json not found".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("/tmp/bundle"), "should include path");
     assert!(msg.contains("config.json"), "should include reason");
 }
@@ -204,7 +225,7 @@ fn test_invalid_bundle_display() {
 fn test_spec_generation_failed_display() {
     let err = Error::SpecGenerationFailed("invalid user format".to_string());
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("invalid user format"), "should include reason");
 }
 
@@ -219,7 +240,7 @@ fn test_runtime_unavailable_display() {
         reason: "Linux namespaces not available".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("youki"), "should include runtime name");
     assert!(msg.contains("not available"), "should indicate unavailable");
 }
@@ -228,9 +249,15 @@ fn test_runtime_unavailable_display() {
 fn test_not_supported_display() {
     let err = Error::NotSupported("checkpoint/restore".to_string());
     let msg = format!("{}", err);
-    
-    assert!(msg.contains("checkpoint/restore"), "should include operation");
-    assert!(msg.contains("not supported"), "should indicate not supported");
+
+    assert!(
+        msg.contains("checkpoint/restore"),
+        "should include operation"
+    );
+    assert!(
+        msg.contains("not supported"),
+        "should indicate not supported"
+    );
 }
 
 #[test]
@@ -240,7 +267,7 @@ fn test_exec_failed_display() {
         reason: "command not found".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("my-container"), "should include container");
     assert!(msg.contains("command not found"), "should include reason");
 }
@@ -256,7 +283,7 @@ fn test_capability_unavailable_display() {
         reason: "not running as root".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("namespaces"), "should include capability");
     assert!(msg.contains("not running as root"), "should include reason");
 }
@@ -271,7 +298,7 @@ fn test_blob_not_found_display() {
         digest: "sha256:deadbeef".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("sha256:deadbeef"), "should include digest");
 }
 
@@ -282,7 +309,7 @@ fn test_storage_init_failed_display() {
         reason: "permission denied".to_string(),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("/var/lib/storage"), "should include path");
     assert!(msg.contains("permission denied"), "should include reason");
 }
@@ -291,7 +318,7 @@ fn test_storage_init_failed_display() {
 fn test_storage_write_failed_display() {
     let err = Error::StorageWriteFailed("disk full".to_string());
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("disk full"), "should include reason");
 }
 
@@ -306,7 +333,7 @@ fn test_timeout_display() {
         duration: Duration::from_secs(300),
     };
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("image pull"), "should include operation");
     assert!(msg.contains("300"), "should include duration");
 }
@@ -319,7 +346,7 @@ fn test_timeout_display() {
 fn test_internal_error_display() {
     let err = Error::Internal("unexpected state".to_string());
     let msg = format!("{}", err);
-    
+
     assert!(msg.contains("unexpected state"), "should include message");
 }
 
@@ -337,14 +364,14 @@ fn test_error_is_send_sync() {
 fn test_error_is_debug() {
     let err = Error::ContainerNotFound("test".to_string());
     let debug = format!("{:?}", err);
-    
+
     assert!(!debug.is_empty(), "Debug output should not be empty");
 }
 
 #[test]
 fn test_error_source() {
     use std::error::Error as StdError;
-    
+
     let err = Error::ContainerNotFound("test".to_string());
     // Our errors don't wrap other errors, so source is None
     assert!(err.source().is_none());

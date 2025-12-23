@@ -498,12 +498,7 @@ pub trait OciRuntime: Send + Sync {
     /// * `id` - Container ID
     /// * `command` - Command and arguments to run
     /// * `opts` - Execution options (env, user, tty, etc.)
-    async fn exec(
-        &self,
-        id: &str,
-        command: &[String],
-        opts: ExecOptions,
-    ) -> Result<ExecResult> {
+    async fn exec(&self, id: &str, command: &[String], opts: ExecOptions) -> Result<ExecResult> {
         let _ = (id, command, opts);
         Err(crate::error::Error::NotSupported(format!(
             "exec not supported by {} runtime",
@@ -545,7 +540,11 @@ mod tests {
 
     #[test]
     fn test_container_state() {
-        let state = ContainerState::new("test-container", "/path/to/bundle", ContainerStatus::Running);
+        let state = ContainerState::new(
+            "test-container",
+            "/path/to/bundle",
+            ContainerStatus::Running,
+        );
         assert!(state.is_running());
         assert_eq!(state.id, "test-container");
         assert_eq!(state.oci_version, "1.0.2");

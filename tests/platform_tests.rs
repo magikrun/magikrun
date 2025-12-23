@@ -3,7 +3,7 @@
 //! Validates platform detection logic, capability enumeration,
 //! and OCI platform string generation.
 
-use magikrun::{Platform, Capability, Os, Arch};
+use magikrun::{Arch, Capability, Os, Platform};
 use std::collections::HashSet;
 
 // =============================================================================
@@ -13,14 +13,14 @@ use std::collections::HashSet;
 #[test]
 fn test_platform_detect_returns_valid_os() {
     let platform = Platform::detect();
-    
+
     // OS should match compile-time expectation
     #[cfg(target_os = "linux")]
     assert_eq!(platform.os, Os::Linux);
-    
+
     #[cfg(target_os = "macos")]
     assert_eq!(platform.os, Os::Darwin);
-    
+
     #[cfg(target_os = "windows")]
     assert_eq!(platform.os, Os::Windows);
 }
@@ -28,13 +28,13 @@ fn test_platform_detect_returns_valid_os() {
 #[test]
 fn test_platform_detect_returns_valid_arch() {
     let platform = Platform::detect();
-    
+
     #[cfg(target_arch = "x86_64")]
     assert_eq!(platform.arch, Arch::Amd64);
-    
+
     #[cfg(target_arch = "aarch64")]
     assert_eq!(platform.arch, Arch::Arm64);
-    
+
     #[cfg(target_arch = "arm")]
     assert_eq!(platform.arch, Arch::Arm);
 }
@@ -42,7 +42,7 @@ fn test_platform_detect_returns_valid_arch() {
 #[test]
 fn test_wasm_runtime_always_available() {
     let platform = Platform::detect();
-    
+
     // WASM runtime is pure Rust, should always be available
     assert!(
         platform.capabilities.contains(&Capability::WasmRuntime),
@@ -54,7 +54,7 @@ fn test_wasm_runtime_always_available() {
 fn test_platform_is_cloneable() {
     let platform = Platform::detect();
     let cloned = platform.clone();
-    
+
     assert_eq!(platform.os, cloned.os);
     assert_eq!(platform.arch, cloned.arch);
     assert_eq!(platform.capabilities, cloned.capabilities);
@@ -68,22 +68,22 @@ fn test_platform_is_cloneable() {
 fn test_oci_platform_string_format() {
     let platform = Platform::detect();
     let oci_platform = platform.oci_platform();
-    
+
     // Format should be "os/arch"
     assert!(
         oci_platform.contains('/'),
         "OCI platform string should contain '/'"
     );
-    
+
     let parts: Vec<&str> = oci_platform.split('/').collect();
     assert_eq!(parts.len(), 2, "OCI platform should have exactly 2 parts");
-    
+
     // OS part should be lowercase
     assert!(
         parts[0].chars().all(|c| c.is_lowercase() || c.is_numeric()),
         "OS part should be lowercase"
     );
-    
+
     // Arch part should be lowercase
     assert!(
         parts[1].chars().all(|c| c.is_lowercase() || c.is_numeric()),
@@ -95,16 +95,16 @@ fn test_oci_platform_string_format() {
 fn test_oci_platform_matches_current() {
     let platform = Platform::detect();
     let oci_platform = platform.oci_platform();
-    
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     assert_eq!(oci_platform, "linux/amd64");
-    
+
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     assert_eq!(oci_platform, "linux/arm64");
-    
+
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     assert_eq!(oci_platform, "darwin/amd64");
-    
+
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert_eq!(oci_platform, "darwin/arm64");
 }
@@ -117,11 +117,11 @@ fn test_oci_platform_matches_current() {
 mod linux_capabilities {
     use super::*;
     use std::path::Path;
-    
+
     #[test]
     fn test_namespaces_detected_when_available() {
         let platform = Platform::detect();
-        
+
         // If /proc/self/ns/pid exists, namespaces should be detected
         if Path::new("/proc/self/ns/pid").exists() {
             assert!(
@@ -130,11 +130,11 @@ mod linux_capabilities {
             );
         }
     }
-    
+
     #[test]
     fn test_cgroups_detected_when_available() {
         let platform = Platform::detect();
-        
+
         // If /sys/fs/cgroup exists, cgroups should be detected
         if Path::new("/sys/fs/cgroup").exists() {
             assert!(
@@ -143,11 +143,11 @@ mod linux_capabilities {
             );
         }
     }
-    
+
     #[test]
     fn test_hypervisor_detection_kvm() {
         let platform = Platform::detect();
-        
+
         // KVM detection depends on /dev/kvm
         if Path::new("/dev/kvm").exists() {
             // Note: May still not be accessible if permissions are wrong
@@ -160,22 +160,22 @@ mod linux_capabilities {
 #[cfg(target_os = "macos")]
 mod macos_capabilities {
     use super::*;
-    
+
     #[test]
     fn test_no_namespaces_on_macos() {
         let platform = Platform::detect();
-        
+
         // Linux namespaces don't exist on macOS
         assert!(
             !platform.capabilities.contains(&Capability::Namespaces),
             "Namespaces should not be detected on macOS"
         );
     }
-    
+
     #[test]
     fn test_no_cgroups_on_macos() {
         let platform = Platform::detect();
-        
+
         // Linux cgroups don't exist on macOS
         assert!(
             !platform.capabilities.contains(&Capability::Cgroups),
@@ -191,11 +191,11 @@ mod macos_capabilities {
 #[test]
 fn test_supports_native_containers() {
     let platform = Platform::detect();
-    
+
     // Native containers require both namespaces and cgroups
     let expected = platform.capabilities.contains(&Capability::Namespaces)
         && platform.capabilities.contains(&Capability::Cgroups);
-    
+
     assert_eq!(
         platform.supports_native_containers(),
         expected,
@@ -206,9 +206,9 @@ fn test_supports_native_containers() {
 #[test]
 fn test_has_hypervisor() {
     let platform = Platform::detect();
-    
+
     let expected = platform.capabilities.contains(&Capability::Hypervisor);
-    
+
     assert_eq!(
         platform.has_hypervisor(),
         expected,
@@ -252,6 +252,6 @@ fn test_capability_hashable() {
     set.insert(Capability::WasmRuntime);
     set.insert(Capability::Namespaces);
     set.insert(Capability::WasmRuntime); // duplicate
-    
+
     assert_eq!(set.len(), 2, "HashSet should deduplicate capabilities");
 }

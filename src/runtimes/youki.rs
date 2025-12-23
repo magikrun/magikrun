@@ -101,7 +101,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::constants::{validate_container_id, MAX_CONTAINERS};
+    use crate::constants::{MAX_CONTAINERS, validate_container_id};
     use crate::error::{Error, Result};
     use crate::runtime::{ContainerState, ContainerStatus, OciRuntime, Signal};
     use async_trait::async_trait;
@@ -189,9 +189,8 @@ mod linux {
                 return Err(Error::ContainerNotFound(id.to_string()));
             }
 
-            Container::load(container_dir).map_err(|e| {
-                Error::Internal(format!("Failed to load container {}: {}", id, e))
-            })
+            Container::load(container_dir)
+                .map_err(|e| Error::Internal(format!("Failed to load container {}: {}", id, e)))
         }
     }
 
@@ -219,18 +218,17 @@ mod linux {
             debug!("Creating container {} from bundle {}", id, bundle.display());
 
             // SECURITY: Validate container ID format (consistent with wasmtime/krun)
-            validate_container_id(id).map_err(|reason| {
-                Error::InvalidContainerId {
-                    id: id.to_string(),
-                    reason: reason.to_string(),
-                }
+            validate_container_id(id).map_err(|reason| Error::InvalidContainerId {
+                id: id.to_string(),
+                reason: reason.to_string(),
             })?;
 
             // SECURITY: Check container limit before creation
             {
-                let containers = self.containers.read().map_err(|e| {
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
+                let containers = self
+                    .containers
+                    .read()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
                 if containers.len() >= MAX_CONTAINERS {
                     return Err(Error::ResourceExhausted(format!(
                         "maximum container limit reached ({})",
@@ -269,12 +267,16 @@ mod linux {
 
             // Track container
             {
-                let mut containers = self.containers.write().map_err(|e| {
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
-                containers.insert(id.to_string(), ContainerInfo {
-                    bundle: bundle.to_path_buf(),
-                });
+                let mut containers = self
+                    .containers
+                    .write()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                containers.insert(
+                    id.to_string(),
+                    ContainerInfo {
+                        bundle: bundle.to_path_buf(),
+                    },
+                );
             }
 
             info!("Created container {}", id);
@@ -309,9 +311,10 @@ mod linux {
             let pid = container.pid().map(|p| p.as_raw() as u32);
 
             let bundle = {
-                let containers = self.containers.read().map_err(|e| {
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
+                let containers = self
+                    .containers
+                    .read()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
                 containers
                     .get(id)
                     .map(|c| c.bundle.to_string_lossy().to_string())
@@ -342,17 +345,18 @@ mod linux {
                 Signal::Usr2 => "SIGUSR2",
             };
 
-            let lc_signal = LibcontainerSignal::try_from(sig_name).map_err(|e| {
-                Error::SignalFailed {
+            let lc_signal =
+                LibcontainerSignal::try_from(sig_name).map_err(|e| Error::SignalFailed {
                     id: id.to_string(),
                     reason: format!("invalid signal: {}", e),
-                }
-            })?;
+                })?;
 
-            container.kill(lc_signal, all).map_err(|e| Error::SignalFailed {
-                id: id.to_string(),
-                reason: e.to_string(),
-            })?;
+            container
+                .kill(lc_signal, all)
+                .map_err(|e| Error::SignalFailed {
+                    id: id.to_string(),
+                    reason: e.to_string(),
+                })?;
 
             info!("Sent {} to container {}", signal, id);
             Ok(())
@@ -370,9 +374,10 @@ mod linux {
 
             // Remove from tracking
             {
-                let mut containers = self.containers.write().map_err(|e| {
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
+                let mut containers = self
+                    .containers
+                    .write()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
                 containers.remove(id);
             }
 
@@ -384,13 +389,13 @@ mod linux {
             // Poll for container exit and retrieve exit code
             loop {
                 let container = self.load_container(id)?;
-                
+
                 if container.state.status == YoukiStatus::Stopped {
                     // Get PID to query exit status
                     // libcontainer doesn't expose exit code directly, so we return 0
                     // for stopped containers. For actual exit code tracking, the caller
                     // should use wait4() on the container PID before it exits.
-                    // 
+                    //
                     // Note: This is a limitation of the libcontainer API.
                     // Production deployments should use container.pid() + waitpid()
                     // in a background task started during container.start().
@@ -548,7 +553,7 @@ mod stub {
 // =============================================================================
 
 #[cfg(target_os = "linux")]
-pub use linux::{get_namespace_paths, YoukiRuntime};
+pub use linux::{YoukiRuntime, get_namespace_paths};
 
 #[cfg(not(target_os = "linux"))]
 pub use stub::YoukiRuntime;
