@@ -8,6 +8,10 @@ repository = "https://github.com/magikrun/magikrun"
 keywords = ["oci", "containers", "runtime"]
 categories = ["virtualization"]
 
+[features]
+default = []
+integration_tests = []
+
 [dependencies]
 # Core
 async-trait = "0.1"
