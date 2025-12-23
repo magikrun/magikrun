@@ -47,7 +47,7 @@
 //! }
 //! ```
 //!
-//! The [`get_namespace_paths`] function extracts namespace paths from a
+//! The `get_namespace_paths` function extracts namespace paths from a
 //! running container's PID for subsequent containers to join.
 //!
 //! ## State Storage
@@ -89,7 +89,7 @@
 //!
 //! ## Platform Support
 //!
-//! Linux-only. On non-Linux platforms, [`NativeRuntime::is_available`] returns
+//! Linux-only. On non-Linux platforms, [`is_available`](crate::runtime::OciRuntime::is_available) returns
 //! `false` and all operations return [`Error::RuntimeUnavailable`].
 //!
 //! [`OciRuntime`]: crate::runtime::OciRuntime

@@ -87,7 +87,7 @@
 //!
 //! ## Platform Support
 //!
-//! Linux and macOS only. On Windows, [`KrunRuntime::is_available`] returns
+//! Linux and macOS only. On Windows, [`is_available`](crate::runtime::OciRuntime::is_available) returns
 //! `false` and all operations return [`Error::RuntimeUnavailable`].
 //!
 //! [`OciRuntime`]: crate::runtime::OciRuntime
