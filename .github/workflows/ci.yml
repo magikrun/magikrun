@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  LIBKRUN_VERSION: "v1.16.0"
 
 jobs:
   # ===========================================================================
@@ -37,12 +38,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          
+          # Create a fake init binary (not running VMs)
+          mkdir -p init
+          touch init/init
+          
+          # Build libkrun (allow unused imports - upstream has some in v1.16.0)
+          RUSTFLAGS="-A unused_imports" make
+          
+          # Install to prefix
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -62,9 +95,15 @@ jobs:
 
       - name: Clippy (all warnings as errors)
         run: cargo clippy --locked -- -D warnings
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Clippy (pedantic - advisory)
         run: cargo clippy --locked -- -W clippy::pedantic || true
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
   code-quality-macos:
     name: Clippy (macOS arm64)
@@ -74,7 +113,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install libkrun
+          brew tap slp/krun
+          brew install llvm pkg-config slp/krun/libkrun slp/krun/libkrunfw
+          # Create libkrunfw version symlink (libkrun expects v5, brew installs v4)
+          sudo ln -sf /opt/homebrew/lib/libkrunfw.4.dylib /opt/homebrew/lib/libkrunfw.5.dylib
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -94,6 +136,11 @@ jobs:
 
       - name: Clippy (all warnings as errors)
         run: cargo clippy --locked -- -D warnings
+        env:
+          LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          LIBRARY_PATH: /opt/homebrew/lib
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
   # ===========================================================================
   # Unit Tests
@@ -105,12 +152,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          
+          # Create a fake init binary (not running VMs)
+          mkdir -p init
+          touch init/init
+          
+          # Build libkrun (allow unused imports - upstream has some in v1.16.0)
+          RUSTFLAGS="-A unused_imports" make
+          
+          # Install to prefix
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Enable KVM group permissions
         run: |
@@ -135,9 +214,15 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Run doc tests
         run: cargo test --doc --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
   unit-tests-macos:
     name: Tests (macOS arm64)
@@ -148,7 +233,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install libkrun
+          brew tap slp/krun
+          brew install llvm pkg-config slp/krun/libkrun slp/krun/libkrunfw
+          # Create libkrunfw version symlink (libkrun expects v5, brew installs v4)
+          sudo ln -sf /opt/homebrew/lib/libkrunfw.4.dylib /opt/homebrew/lib/libkrunfw.5.dylib
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -166,6 +254,11 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --locked
+        env:
+          LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          LIBRARY_PATH: /opt/homebrew/lib
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
   # ===========================================================================
   # Security Audit
@@ -209,18 +302,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (Linux)
+      - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build (Linux)
+        if: runner.os == 'Linux'
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun (Linux)
+        if: runner.os == 'Linux' && steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          
+          # Create a fake init binary (not running VMs)
+          mkdir -p init
+          touch init/init
+          
+          # Build libkrun
+          RUSTFLAGS="-A unused_imports" make
+          
+          # Install to prefix
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install libkrun
+          brew tap slp/krun
+          brew install llvm pkg-config slp/krun/libkrun slp/krun/libkrunfw
+          sudo ln -sf /opt/homebrew/lib/libkrunfw.4.dylib /opt/homebrew/lib/libkrunfw.5.dylib
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -240,6 +369,12 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release --locked
+        env:
+          PKG_CONFIG_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig' || '/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig' }}
+          LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib' || '' }}
+          LIBCLANG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/llvm/lib' || '' }}
+          LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
+          DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
 
       - name: Verify binary artifacts
         run: |
@@ -255,12 +390,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -279,6 +440,8 @@ jobs:
       - name: Build documentation
         run: cargo doc --no-deps --locked
         env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
           RUSTDOCFLAGS: "-D warnings"
 
   # ===========================================================================
@@ -290,12 +453,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       # Rust 2024 edition requires nightly for now
       - name: Install Rust toolchain (nightly for 2024 edition)
@@ -316,6 +505,9 @@ jobs:
 
       - name: Check MSRV compatibility
         run: cargo check --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
   # ===========================================================================
   # All Checks Passed Gate

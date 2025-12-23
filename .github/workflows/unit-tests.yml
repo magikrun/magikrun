@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Runs the test suite on all supported platforms.
-# Modeled after libkrun's unit_tests.yml workflow.
+# Builds libkrun from source as it's not available in Ubuntu repositories.
 #
 # Security Note:
 #   KVM access is enabled on Linux runners for testing YoukiRuntime
@@ -15,6 +15,9 @@ name: Unit Tests
 
 on: [pull_request]
 
+env:
+  LIBKRUN_VERSION: "v1.16.0"
+
 jobs:
   # ===========================================================================
   # Linux x86_64
@@ -25,12 +28,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-x86_64-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Enable KVM group permissions
         run: |
@@ -55,6 +84,9 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
   # ===========================================================================
   # Linux aarch64
@@ -65,12 +97,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-aarch64-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Enable KVM group permissions
         run: |
@@ -95,6 +153,9 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
   # ===========================================================================
   # macOS arm64
@@ -107,7 +168,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install libkrun
+          brew tap slp/krun
+          brew install llvm pkg-config slp/krun/libkrun slp/krun/libkrunfw
+          sudo ln -sf /opt/homebrew/lib/libkrunfw.4.dylib /opt/homebrew/lib/libkrunfw.5.dylib
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -125,3 +188,8 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --locked
+        env:
+          LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          LIBRARY_PATH: /opt/homebrew/lib
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib

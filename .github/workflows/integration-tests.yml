@@ -4,6 +4,7 @@
 #
 # Runs integration tests that require actual container/VM execution.
 # These tests verify the full OCI runtime lifecycle.
+# Builds libkrun from source as it's not available in Ubuntu repositories.
 #
 # Security Note:
 #   - KVM access is required for KrunRuntime tests
@@ -21,6 +22,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  LIBKRUN_VERSION: "v1.16.0"
+
 jobs:
   # ===========================================================================
   # Integration Tests - Linux x86_64
@@ -31,14 +35,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -yqq --no-install-recommends \
-            libkrun-dev \
-            pkg-config \
+          sudo apt-get install -y \
+            pkgconf \
+            make \
+            gcc \
+            git \
             crun \
             fuse-overlayfs
+
+      - name: Cache libkrun build
+        id: cache-libkrun
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libkrun-prefix
+          key: libkrun-ubuntu-x86_64-${{ env.LIBKRUN_VERSION }}-v2
+
+      - name: Build libkrun
+        if: steps.cache-libkrun.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.LIBKRUN_VERSION }} \
+            https://github.com/containers/libkrun.git /tmp/libkrun
+          cd /tmp/libkrun
+          mkdir -p init
+          touch init/init
+          RUSTFLAGS="-A unused_imports" make
+          PREFIX=/tmp/libkrun-prefix make install
+
+      - name: Install libkrun to system
+        run: |
+          sudo cp -r /tmp/libkrun-prefix/lib64/* /usr/local/lib/
+          sudo cp -r /tmp/libkrun-prefix/include/* /usr/local/include/
+          sudo ldconfig
 
       - name: Enable KVM group permissions
         run: |
@@ -63,14 +93,23 @@ jobs:
 
       - name: Build release
         run: cargo build --release --locked
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Run integration tests
         run: cargo test --release --locked -- --ignored
         continue-on-error: true
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Test WasmtimeRuntime availability
         run: |
           cargo test --release --locked wasmtime -- --nocapture
+        env:
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
+          LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Upload test artifacts
         if: failure()
@@ -93,7 +132,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew install libkrun
+          brew tap slp/krun
+          brew install llvm pkg-config slp/krun/libkrun slp/krun/libkrunfw
+          sudo ln -sf /opt/homebrew/lib/libkrunfw.4.dylib /opt/homebrew/lib/libkrunfw.5.dylib
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -111,18 +152,32 @@ jobs:
 
       - name: Build release
         run: cargo build --release --locked
+        env:
+          LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          LIBRARY_PATH: /opt/homebrew/lib
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Run integration tests
         run: cargo test --release --locked -- --ignored
         continue-on-error: true
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Test WasmtimeRuntime availability
         run: |
           cargo test --release --locked wasmtime -- --nocapture
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Test KrunRuntime with HVF
         run: |
           cargo test --release --locked krun -- --nocapture
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
+          DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Upload test artifacts
         if: failure()
@@ -131,5 +186,5 @@ jobs:
           name: integration-test-logs-macos
           path: |
             target/debug/deps/*.log
-            ~/Library/Application Support/magik-oci/**
+            /tmp/magik-oci/**
           retention-days: 5
