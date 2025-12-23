@@ -99,8 +99,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use wasmtime::{Config, Engine, Linker, Module, Store};
-use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
 
 use crate::constants::{
     DEFAULT_WASM_FUEL, MAX_CONTAINERS, MAX_WASM_MODULE_SIZE, validate_container_id,
