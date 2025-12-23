@@ -334,7 +334,7 @@ mod linux {
         async fn kill(&self, id: &str, signal: Signal, all: bool) -> Result<()> {
             debug!("Sending {} to container {}", signal, id);
 
-            let container = self.load_container(id)?;
+            let mut container = self.load_container(id)?;
 
             let sig_name = match signal {
                 Signal::Term => "SIGTERM",
@@ -365,7 +365,7 @@ mod linux {
         async fn delete(&self, id: &str, force: bool) -> Result<()> {
             debug!("Deleting container {} (force={})", id, force);
 
-            let container = self.load_container(id)?;
+            let mut container = self.load_container(id)?;
 
             container.delete(force).map_err(|e| Error::DeleteFailed {
                 id: id.to_string(),
