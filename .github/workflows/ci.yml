@@ -97,13 +97,13 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
 
       - name: Clippy (all warnings as errors)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Clippy (pedantic - advisory)
-        run: cargo clippy --locked -- -W clippy::pedantic || true
+        run: cargo clippy -- -W clippy::pedantic || true
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -138,7 +138,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
 
       - name: Clippy (all warnings as errors)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
         env:
           LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
@@ -219,13 +219,13 @@ jobs:
             ${{ runner.os }}-cargo-test-
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Run doc tests
-        run: cargo test --doc --locked
+        run: cargo test --doc
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -259,7 +259,7 @@ jobs:
             ${{ runner.os }}-cargo-test-
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test
         env:
           LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
@@ -375,7 +375,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
       - name: Build (release)
-        run: cargo build --release --locked
+        run: cargo build --release
         env:
           PKG_CONFIG_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig' || '/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig' }}
           LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib' || '' }}
@@ -448,7 +448,7 @@ jobs:
             ${{ runner.os }}-cargo-doc-
 
       - name: Build documentation
-        run: cargo doc --no-deps --locked
+        run: cargo doc --no-deps
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -517,7 +517,7 @@ jobs:
             ${{ runner.os }}-cargo-msrv-
 
       - name: Check MSRV compatibility
-        run: cargo check --locked
+        run: cargo check
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib

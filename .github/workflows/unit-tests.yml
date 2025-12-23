@@ -86,7 +86,7 @@ jobs:
             ${{ runner.os }}-x86_64-cargo-test-
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -158,7 +158,7 @@ jobs:
             ${{ runner.os }}-aarch64-cargo-test-
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -193,7 +193,7 @@ jobs:
             ${{ runner.os }}-arm64-cargo-test-
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test
         env:
           LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
@@ -226,7 +226,7 @@ jobs:
       # Note: libkrun and youki are not available on Windows
       # Only WindowsRuntime (WSL2 MicroVM) and WasmtimeRuntime are functional
       - name: Run unit tests (Windows-compatible only)
-        run: cargo test --locked
+        run: cargo test
         env:
           # Skip tests that require libkrun (not available on Windows)
           RUST_TEST_THREADS: 1

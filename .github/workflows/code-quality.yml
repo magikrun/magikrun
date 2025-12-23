@@ -82,7 +82,7 @@ jobs:
             ${{ runner.os }}-x86_64-cargo-clippy-
 
       - name: Clippy (default - all warnings as errors)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -149,7 +149,7 @@ jobs:
             ${{ runner.os }}-aarch64-cargo-clippy-
 
       - name: Clippy (default - all warnings as errors)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -186,7 +186,7 @@ jobs:
             ${{ runner.os }}-arm64-cargo-clippy-
 
       - name: Clippy (default - all warnings as errors)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy -- -D warnings
         env:
           LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig

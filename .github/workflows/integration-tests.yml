@@ -94,13 +94,13 @@ jobs:
             ${{ runner.os }}-x86_64-cargo-integration-
 
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
 
       - name: Run integration tests
-        run: cargo test --release --locked -- --ignored
+        run: cargo test --release -- --ignored
         continue-on-error: true
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
@@ -108,7 +108,7 @@ jobs:
 
       - name: Test WasmtimeRuntime availability
         run: |
-          cargo test --release --locked wasmtime -- --nocapture
+          cargo test --release wasmtime -- --nocapture
         env:
           PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig
           LD_LIBRARY_PATH: /usr/local/lib
@@ -153,7 +153,7 @@ jobs:
             ${{ runner.os }}-arm64-cargo-integration-
 
       - name: Build release
-        run: cargo build --release --locked
+        run: cargo build --release
         env:
           LIBCLANG_PATH: /opt/homebrew/opt/llvm/lib
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
@@ -161,7 +161,7 @@ jobs:
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Run integration tests
-        run: cargo test --release --locked -- --ignored
+        run: cargo test --release -- --ignored
         continue-on-error: true
         env:
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
@@ -169,14 +169,14 @@ jobs:
 
       - name: Test WasmtimeRuntime availability
         run: |
-          cargo test --release --locked wasmtime -- --nocapture
+          cargo test --release wasmtime -- --nocapture
         env:
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
 
       - name: Test KrunRuntime with HVF
         run: |
-          cargo test --release --locked krun -- --nocapture
+          cargo test --release krun -- --nocapture
         env:
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig
           DYLD_LIBRARY_PATH: /opt/homebrew/lib
