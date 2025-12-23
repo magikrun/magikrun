@@ -366,7 +366,6 @@ impl WindowsRuntime {
     #[cfg(target_os = "windows")]
     async fn create_rootfs_tarball(&self, rootfs: &Path, tar_path: &Path) -> Result<()> {
         use std::fs::File;
-        use std::io::Write;
 
         // Use tar command via WSL to create the tarball (more reliable than Rust tar on Windows)
         let rootfs_wsl = Self::windows_to_wsl_path(rootfs)?;
