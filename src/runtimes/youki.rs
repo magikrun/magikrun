@@ -286,7 +286,7 @@ mod linux {
         async fn start(&self, id: &str) -> Result<()> {
             debug!("Starting container {}", id);
 
-            let container = self.load_container(id)?;
+            let mut container = self.load_container(id)?;
 
             container.start().map_err(|e| Error::StartFailed {
                 id: id.to_string(),
