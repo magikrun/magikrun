@@ -427,7 +427,8 @@ impl BundleBuilder {
             oci_version: OCI_RUNTIME_SPEC_VERSION.to_string(),
             root: OciRoot {
                 path: "rootfs".to_string(),
-                readonly: false,
+                // SECURITY: Read-only rootfs prevents persistent modifications
+                readonly: true,
             },
             process: OciProcess {
                 terminal: false,
@@ -441,6 +442,10 @@ impl BundleBuilder {
                     .working_dir
                     .clone()
                     .unwrap_or_else(|| "/".to_string()),
+                // SECURITY: Prevent privilege escalation via setuid/setgid
+                no_new_privileges: true,
+                // SECURITY: Minimal capability set
+                capabilities: Some(Self::default_capabilities()),
             },
             hostname: config
                 .hostname
@@ -469,10 +474,65 @@ impl BundleBuilder {
                         ns_type: "mount".to_string(),
                         path: None,
                     },
+                    // SECURITY: Isolate cgroup visibility
+                    OciNamespace {
+                        ns_type: "cgroup".to_string(),
+                        path: None,
+                    },
                 ],
                 resources: None,
+                // SECURITY: Hide sensitive kernel interfaces
+                masked_paths: Self::default_masked_paths(),
+                // SECURITY: Prevent writes to sensitive proc entries
+                readonly_paths: Self::default_readonly_paths(),
             }),
         }
+    }
+
+    /// Returns the default capability set for containers.
+    ///
+    /// SECURITY: Minimal capabilities to reduce attack surface.
+    /// Only `CAP_NET_BIND_SERVICE` is granted to allow binding ports < 1024.
+    fn default_capabilities() -> OciCapabilities {
+        let minimal_caps = vec!["CAP_NET_BIND_SERVICE".to_string()];
+        OciCapabilities {
+            bounding: minimal_caps.clone(),
+            effective: minimal_caps.clone(),
+            permitted: minimal_caps.clone(),
+            ambient: vec![], // No ambient capabilities
+        }
+    }
+
+    /// Returns paths to mask from containers.
+    ///
+    /// SECURITY: These paths expose sensitive kernel information or
+    /// interfaces that could be used for container escape.
+    fn default_masked_paths() -> Vec<String> {
+        vec![
+            "/proc/acpi".to_string(),
+            "/proc/kcore".to_string(),
+            "/proc/keys".to_string(),
+            "/proc/latency_stats".to_string(),
+            "/proc/timer_list".to_string(),
+            "/proc/timer_stats".to_string(),
+            "/proc/sched_debug".to_string(),
+            "/proc/scsi".to_string(),
+            "/sys/firmware".to_string(),
+        ]
+    }
+
+    /// Returns paths that should be read-only inside containers.
+    ///
+    /// SECURITY: Prevents container processes from modifying kernel
+    /// tunable parameters via procfs.
+    fn default_readonly_paths() -> Vec<String> {
+        vec![
+            "/proc/bus".to_string(),
+            "/proc/fs".to_string(),
+            "/proc/irq".to_string(),
+            "/proc/sys".to_string(),
+            "/proc/sysrq-trigger".to_string(),
+        ]
     }
 
     /// Returns default OCI mounts.
@@ -513,6 +573,28 @@ impl BundleBuilder {
                     "noexec".to_string(),
                     "nodev".to_string(),
                     "ro".to_string(),
+                ],
+            },
+            // SECURITY: Bounded tmpfs for /tmp prevents disk exhaustion
+            OciMount {
+                destination: "/tmp".to_string(),
+                mount_type: "tmpfs".to_string(),
+                source: "tmpfs".to_string(),
+                options: vec![
+                    "nosuid".to_string(),
+                    "nodev".to_string(),
+                    "size=64m".to_string(),
+                ],
+            },
+            // SECURITY: Bounded tmpfs for /run
+            OciMount {
+                destination: "/run".to_string(),
+                mount_type: "tmpfs".to_string(),
+                source: "tmpfs".to_string(),
+                options: vec![
+                    "nosuid".to_string(),
+                    "nodev".to_string(),
+                    "size=64m".to_string(),
                 ],
             },
         ]
@@ -597,12 +679,25 @@ pub struct OciRoot {
 
 /// OCI process config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OciProcess {
     pub terminal: bool,
     pub user: OciUser,
     pub args: Vec<String>,
     pub env: Vec<String>,
     pub cwd: String,
+    /// Prevents the process from gaining additional privileges.
+    /// SECURITY: Always true to prevent setuid/setgid exploits.
+    #[serde(default = "default_no_new_privileges")]
+    pub no_new_privileges: bool,
+    /// Capability restrictions for the process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<OciCapabilities>,
+}
+
+/// Default value for no_new_privileges (always true for security).
+fn default_no_new_privileges() -> bool {
+    true
 }
 
 /// OCI user config.
@@ -625,10 +720,19 @@ pub struct OciMount {
 
 /// OCI Linux-specific config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OciLinux {
     pub namespaces: Vec<OciNamespace>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<OciResources>,
+    /// Paths to mask from the container (appear empty/inaccessible).
+    /// SECURITY: Hides sensitive kernel interfaces.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub masked_paths: Vec<String>,
+    /// Paths to mount read-only inside the container.
+    /// SECURITY: Prevents writes to sensitive proc entries.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub readonly_paths: Vec<String>,
 }
 
 /// OCI namespace config.
@@ -673,6 +777,26 @@ pub struct OciCpu {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OciPids {
     pub limit: i64,
+}
+
+/// OCI capability set.
+///
+/// SECURITY: Containers run with minimal capabilities by default.
+/// Only CAP_NET_BIND_SERVICE is granted to allow binding low ports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciCapabilities {
+    /// Maximum capabilities the process can have.
+    #[serde(default)]
+    pub bounding: Vec<String>,
+    /// Capabilities in the effective set.
+    #[serde(default)]
+    pub effective: Vec<String>,
+    /// Capabilities in the permitted set.
+    #[serde(default)]
+    pub permitted: Vec<String>,
+    /// Capabilities in the ambient set (inherited across execve).
+    #[serde(default)]
+    pub ambient: Vec<String>,
 }
 
 // =============================================================================
