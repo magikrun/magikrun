@@ -1,0 +1,23 @@
+# =============================================================================
+# cargo-audit configuration
+# =============================================================================
+#
+# Ignored advisories are documented with justification per AGENTS.md requirements.
+#
+# =============================================================================
+
+[advisories]
+# RUSTSEC-2024-0437: protobuf uncontrolled recursion crash
+# 
+# JUSTIFICATION: This is a transitive dependency via libcontainer -> rust-criu.
+# The vulnerable code path (protobuf parsing) is only used for CRIU checkpoint/restore
+# functionality, which is not exposed to untrusted inputs in magikrun's use case.
+# 
+# UPSTREAM ISSUE: https://github.com/checkpoint-restore/rust-criu/issues/19
+# libcontainer pins protobuf = "= 3.2.0" due to rust-criu compatibility.
+# 
+# RISK: Low. Crash requires attacker-controlled protobuf input to CRIU, which
+# is not a supported attack vector in container runtime operations.
+# 
+# REMEDIATION: Will be resolved when upstream rust-criu updates protobuf dependency.
+ignore = ["RUSTSEC-2024-0437"]

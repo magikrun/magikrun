@@ -99,8 +99,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use wasmtime::{Config, Engine, Linker, Module, Store};
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
-use wasmtime_wasi::preview1;
 
 use crate::constants::{
     DEFAULT_WASM_FUEL, MAX_CONTAINERS, MAX_WASM_MODULE_SIZE, validate_container_id,
@@ -504,12 +504,12 @@ impl WasmtimeRuntime {
             .build_p1();
 
         // Create store with fuel
-        let mut store = Store::new(engine, wasi);
+        let mut store: Store<WasiP1Ctx> = Store::new(engine, wasi);
         store.set_fuel(DEFAULT_WASM_FUEL).ok();
 
         // Create linker and add WASI
-        let mut linker = Linker::new(engine);
-        preview1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| Error::StartFailed {
+        let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
+        p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| Error::StartFailed {
             id: bundle.to_string_lossy().to_string(),
             reason: format!("failed to add WASI: {}", e),
         })?;
