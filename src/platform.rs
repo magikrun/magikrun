@@ -43,7 +43,7 @@
 //! let platform = Platform::detect();
 //!
 //! if platform.supports_native_containers() {
-//!     println!("Can use YoukiRuntime (Linux namespaces + cgroups)");
+//!     println!("Can use NativeRuntime (Linux namespaces + cgroups)");
 //! }
 //!
 //! if platform.has_hypervisor() {
@@ -77,7 +77,7 @@ use std::path::Path;
 ///
 /// // Check capabilities
 /// if platform.supports_native_containers() {
-///     // YoukiRuntime available
+///     // NativeRuntime available
 /// }
 ///
 /// // Get OCI platform string for image pulling

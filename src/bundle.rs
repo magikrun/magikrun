@@ -8,7 +8,7 @@
 //!
 //! | Format          | Contents                        | Runtime Backend     |
 //! |-----------------|--------------------------------|---------------------|
-//! | `Bundle::OciRuntime` | `rootfs/` + `config.json` | YoukiRuntime       |
+//! | `Bundle::OciRuntime` | `rootfs/` + `config.json` | NativeRuntime       |
 //! | `Bundle::Wasm`       | `module.wasm` + WASI config | WasmtimeRuntime    |
 //! | `Bundle::MicroVm`    | `rootfs/` + command/env     | KrunRuntime        |
 //!
@@ -110,7 +110,7 @@ pub enum BundleFormat {
 /// - `path/rootfs/` - Extracted filesystem layers
 /// - `path/config.json` - OCI runtime spec configuration
 ///
-/// Used by: [`YoukiRuntime`](crate::runtimes::YoukiRuntime)
+/// Used by: [`NativeRuntime`](crate::runtimes::NativeRuntime)
 ///
 /// ### `Wasm`
 /// WebAssembly module with WASI configuration:

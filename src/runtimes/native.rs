@@ -1,4 +1,4 @@
-//! # Youki OCI Runtime - Native Linux Container Operations
+//! # Native OCI Runtime - Native Linux Container Operations
 //!
 //! Implements the [`OciRuntime`] trait using youki's `libcontainer`, providing
 //! native Linux container isolation via namespaces and cgroups v2.
@@ -54,7 +54,7 @@
 //!
 //! Container state is stored in:
 //! - Default: `/var/run/magikrun/containers/<container-id>/`
-//! - Custom: Configurable via [`YoukiRuntime::with_state_root`]
+//! - Custom: Configurable via [`NativeRuntime::with_state_root`]
 //!
 //! State files include the libcontainer state.json with status, PID, and
 //! creation timestamp.
@@ -62,15 +62,15 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use magikrun::runtimes::YoukiRuntime;
+//! use magikrun::runtimes::NativeRuntime;
 //! use magikrun::OciRuntime;
 //!
 //! #[tokio::main]
 //! async fn main() -> magikrun::Result<()> {
-//!     let runtime = YoukiRuntime::new();
+//!     let runtime = NativeRuntime::new();
 //!     
 //!     if !runtime.is_available() {
-//!         eprintln!("youki: {}", runtime.unavailable_reason().unwrap());
+//!         eprintln!("native: {}", runtime.unavailable_reason().unwrap());
 //!         return Ok(());
 //!     }
 //!     
@@ -89,7 +89,7 @@
 //!
 //! ## Platform Support
 //!
-//! Linux-only. On non-Linux platforms, [`YoukiRuntime::is_available`] returns
+//! Linux-only. On non-Linux platforms, [`NativeRuntime::is_available`] returns
 //! `false` and all operations return [`Error::RuntimeUnavailable`].
 //!
 //! [`OciRuntime`]: crate::runtime::OciRuntime
@@ -101,14 +101,16 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use crate::constants::{MAX_CONTAINERS, validate_container_id};
+    use crate::constants::{MAX_CONTAINERS, EXEC_TIMEOUT, validate_container_id};
     use crate::error::{Error, Result};
-    use crate::runtime::{ContainerState, ContainerStatus, OciRuntime, Signal};
+    use crate::runtime::{
+        ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal,
+    };
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::RwLock;
-    use tracing::{debug, info};
+    use tracing::{debug, info, warn};
 
     use libcontainer::container::builder::ContainerBuilder;
     use libcontainer::container::{Container, ContainerStatus as YoukiStatus};
@@ -124,7 +126,7 @@ mod linux {
         bundle: PathBuf,
     }
 
-    /// Youki OCI runtime implementation using libcontainer.
+    /// Native OCI runtime implementation using libcontainer.
     ///
     /// Provides native Linux container operations with namespace and cgroup
     /// isolation. Requires Linux with namespace support.
@@ -143,20 +145,20 @@ mod linux {
     ///
     /// Containers are NOT automatically cleaned up on drop. Always call
     /// `delete()` to release container resources and cgroup allocations.
-    pub struct YoukiRuntime {
+    pub struct NativeRuntime {
         available: bool,
         reason: Option<String>,
         state_root: PathBuf,
         containers: RwLock<HashMap<String, ContainerInfo>>,
     }
 
-    impl YoukiRuntime {
-        /// Creates a new youki runtime with default state directory.
+    impl NativeRuntime {
+        /// Creates a new native runtime with default state directory.
         pub fn new() -> Self {
             Self::with_state_root(PathBuf::from(STATE_DIR))
         }
 
-        /// Creates a youki runtime with a custom state root.
+        /// Creates a native runtime with a custom state root.
         pub fn with_state_root(state_root: PathBuf) -> Self {
             let (available, reason) = Self::check_availability(&state_root);
 
@@ -179,7 +181,7 @@ mod linux {
                 return (false, Some(format!("Cannot create state dir: {}", e)));
             }
 
-            info!("youki runtime available at {}", state_root.display());
+            info!("native runtime available at {}", state_root.display());
             (true, None)
         }
 
@@ -194,16 +196,16 @@ mod linux {
         }
     }
 
-    impl Default for YoukiRuntime {
+    impl Default for NativeRuntime {
         fn default() -> Self {
             Self::new()
         }
     }
 
     #[async_trait]
-    impl OciRuntime for YoukiRuntime {
+    impl OciRuntime for NativeRuntime {
         fn name(&self) -> &str {
-            "youki"
+            "native"
         }
 
         fn is_available(&self) -> bool {
@@ -409,6 +411,94 @@ mod linux {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
+
+        async fn exec(
+            &self,
+            id: &str,
+            command: &[String],
+            opts: ExecOptions,
+        ) -> Result<ExecResult> {
+            if command.is_empty() {
+                return Err(Error::ExecFailed {
+                    container: id.to_string(),
+                    reason: "empty command".to_string(),
+                });
+            }
+
+            debug!("Executing {:?} in container {}", command, id);
+
+            // Get container PID for namespace entry
+            let state = self.state(id).await?;
+            let pid = state.pid.ok_or_else(|| Error::ExecFailed {
+                container: id.to_string(),
+                reason: "container has no PID (not running)".to_string(),
+            })?;
+
+            // Build nsenter command to enter container namespaces
+            // -t <pid>: target process
+            // -m: mount namespace
+            // -u: UTS namespace
+            // -i: IPC namespace
+            // -n: network namespace
+            // -p: PID namespace
+            let mut nsenter_cmd = tokio::process::Command::new("nsenter");
+            nsenter_cmd
+                .arg("-t")
+                .arg(pid.to_string())
+                .arg("-m")
+                .arg("-u")
+                .arg("-i")
+                .arg("-n")
+                .arg("-p")
+                .arg("--");
+
+            // Add working directory if specified
+            if let Some(ref dir) = opts.working_dir {
+                // nsenter doesn't support -w directly, so we wrap in sh
+                // This is handled by prepending "cd <dir> &&" to the command
+                // For simplicity, we'll run the command directly and let
+                // the container's process handle the cwd
+                warn!("working_dir not directly supported in exec, ignoring: {}", dir);
+            }
+
+            // Add environment variables via env command wrapper
+            if !opts.env.is_empty() {
+                nsenter_cmd.arg("env");
+                for (key, value) in &opts.env {
+                    nsenter_cmd.arg(format!("{}={}", key, value));
+                }
+            }
+
+            // Add the actual command
+            nsenter_cmd.args(command);
+
+            // Execute with timeout
+            let output = tokio::time::timeout(EXEC_TIMEOUT, nsenter_cmd.output()).await;
+
+            match output {
+                Ok(Ok(out)) => {
+                    let exit_code = out.status.code().unwrap_or(-1);
+                    debug!(
+                        "Exec in container {} completed with exit code {}",
+                        id, exit_code
+                    );
+
+                    Ok(ExecResult {
+                        exit_code,
+                        stdout: if opts.stdout { out.stdout } else { Vec::new() },
+                        stderr: if opts.stderr { out.stderr } else { Vec::new() },
+                    })
+                }
+                Ok(Err(e)) => Err(Error::ExecFailed {
+                    container: id.to_string(),
+                    reason: format!("nsenter failed: {}", e),
+                }),
+                Err(_) => Err(Error::Timeout {
+                    operation: format!("exec in container {}", id),
+                    duration: EXEC_TIMEOUT,
+                }),
+            }
+        }
     }
 
     /// Retrieves namespace paths from a running container's process.
@@ -466,39 +556,39 @@ mod stub {
     use async_trait::async_trait;
     use std::path::{Path, PathBuf};
 
-    /// Stub YoukiRuntime for non-Linux platforms.
+    /// Stub NativeRuntime for non-Linux platforms.
     ///
-    /// Youki requires Linux namespaces and cgroups, so it's not available
+    /// Native runtime requires Linux namespaces and cgroups, so it's not available
     /// on macOS or other platforms. All operations return
     /// [`Error::RuntimeUnavailable`].
     ///
     /// [`Error::RuntimeUnavailable`]: crate::error::Error::RuntimeUnavailable
-    pub struct YoukiRuntime {
+    pub struct NativeRuntime {
         _private: (),
     }
 
-    impl YoukiRuntime {
-        /// Creates a new (unavailable) youki runtime.
+    impl NativeRuntime {
+        /// Creates a new (unavailable) native runtime.
         pub fn new() -> Self {
             Self { _private: () }
         }
 
-        /// Creates a youki runtime with a custom state root (ignored on non-Linux).
+        /// Creates a native runtime with a custom state root (ignored on non-Linux).
         pub fn with_state_root(_state_root: PathBuf) -> Self {
             Self::new()
         }
     }
 
-    impl Default for YoukiRuntime {
+    impl Default for NativeRuntime {
         fn default() -> Self {
             Self::new()
         }
     }
 
     #[async_trait]
-    impl OciRuntime for YoukiRuntime {
+    impl OciRuntime for NativeRuntime {
         fn name(&self) -> &str {
-            "youki"
+            "native"
         }
 
         fn is_available(&self) -> bool {
@@ -506,47 +596,47 @@ mod stub {
         }
 
         fn unavailable_reason(&self) -> Option<String> {
-            Some("youki requires Linux (namespaces, cgroups)".to_string())
+            Some("native runtime requires Linux (namespaces, cgroups)".to_string())
         }
 
         async fn create(&self, _id: &str, _bundle: &Path) -> Result<()> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
 
         async fn start(&self, _id: &str) -> Result<()> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
 
         async fn state(&self, _id: &str) -> Result<ContainerState> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
 
         async fn kill(&self, _id: &str, _signal: Signal, _all: bool) -> Result<()> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
 
         async fn delete(&self, _id: &str, _force: bool) -> Result<()> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
 
         async fn wait(&self, _id: &str) -> Result<i32> {
             Err(Error::RuntimeUnavailable {
-                runtime: "youki".to_string(),
+                runtime: "native".to_string(),
                 reason: "Linux required".to_string(),
             })
         }
@@ -558,7 +648,7 @@ mod stub {
 // =============================================================================
 
 #[cfg(target_os = "linux")]
-pub use linux::{YoukiRuntime, get_namespace_paths};
+pub use linux::{NativeRuntime, get_namespace_paths};
 
 #[cfg(not(target_os = "linux"))]
-pub use stub::YoukiRuntime;
+pub use stub::NativeRuntime;

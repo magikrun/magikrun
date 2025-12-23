@@ -67,11 +67,11 @@
 //!
 //! | Runtime          | Platform       | Isolation          | Use Case            |
 //! |------------------|----------------|--------------------|-----------------    |
-//! | [`YoukiRuntime`] | Linux only     | Namespaces+cgroups | Production containers|
+//! | [`NativeRuntime`] | Linux only     | Namespaces+cgroups | Production containers|
 //! | [`WasmtimeRuntime`] | Cross-platform | WASM sandbox    | Portable plugins    |
 //! | [`KrunRuntime`]  | Linux/macOS    | Hardware VM        | Untrusted workloads |
 //!
-//! [`YoukiRuntime`]: crate::runtimes::YoukiRuntime
+//! [`NativeRuntime`]: crate::runtimes::NativeRuntime
 //! [`WasmtimeRuntime`]: crate::runtimes::WasmtimeRuntime
 //! [`KrunRuntime`]: crate::runtimes::KrunRuntime
 
@@ -204,7 +204,7 @@ impl ContainerState {
 ///
 /// | Runtime   | Signal Support                              |
 /// |-----------|---------------------------------------------|
-/// | YoukiRuntime | Full POSIX signal semantics               |
+/// | NativeRuntime | Full POSIX signal semantics               |
 /// | WasmtimeRuntime | Kill only (marks as stopped)           |
 /// | KrunRuntime | Kill only (frees VM context)              |
 ///
@@ -300,7 +300,7 @@ impl std::fmt::Display for Signal {
 ///
 /// | Runtime   | exec() support | TTY support |
 /// |-----------|----------------|-------------|
-/// | YoukiRuntime | Yes         | Yes         |
+/// | NativeRuntime | Yes         | Yes         |
 /// | WasmtimeRuntime | No       | N/A         |
 /// | KrunRuntime | No           | N/A         |
 ///
@@ -397,7 +397,7 @@ impl ExecResult {
 ///
 /// # Implementations
 ///
-/// - `YoukiRuntime`: Linux containers via libcontainer
+/// - `NativeRuntime`: Linux containers via libcontainer
 /// - `WasmtimeRuntime`: WebAssembly modules via wasmtime
 /// - `KrunRuntime`: MicroVMs via libkrun
 #[async_trait]

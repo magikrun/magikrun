@@ -32,7 +32,7 @@
 //! ├─────────────────────────────────────────────────────────────────────┤
 //! │                      Runtime Backends                               │
 //! │  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐              │
-//! │  │ YoukiRuntime │  │ WasmtimeRuntime│  │  KrunRuntime │              │
+//! │  │NativeRuntime │  │ WasmtimeRuntime│  │  KrunRuntime │              │
 //! │  │   (Linux)    │  │  (Cross-plat)  │  │   (MicroVM)  │              │
 //! │  │  Namespaces  │  │   WASI + Fuel  │  │  KVM / HVF   │              │
 //! │  │  Cgroups v2  │  │   256MB limit  │  │   4GB limit  │              │
@@ -68,7 +68,7 @@
 //! | Runtime   | Isolation Level | Attack Surface | Use Case              |
 //! |-----------|-----------------|----------------|---------------------- |
 //! | KrunRuntime | Hardware VM   | Minimal (VMM)  | Untrusted workloads   |
-//! | YoukiRuntime| Namespaces    | Kernel syscalls| Multi-tenant pods     |
+//! | NativeRuntime| Namespaces    | Kernel syscalls| Multi-tenant pods     |
 //! | WasmtimeRuntime | WASM sandbox | WASI only   | Portable plugins      |
 //!
 //! ## Key Security Properties
@@ -143,5 +143,5 @@ pub use error::{Error, Result};
 pub use platform::{Arch, Capability, Os, Platform};
 pub use registry::{ImageHandle, RegistryClient, pull_image};
 pub use runtime::{ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal};
-pub use runtimes::{KrunRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime, YoukiRuntime};
+pub use runtimes::{KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime};
 pub use storage::BlobStore;

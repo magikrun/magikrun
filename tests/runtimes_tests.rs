@@ -1,9 +1,9 @@
 //! Tests for runtime registry and individual runtime backends.
 //!
 //! Tests the RuntimeRegistry and availability checks for
-//! YoukiRuntime, WasmtimeRuntime, and KrunRuntime.
+//! NativeRuntime, WasmtimeRuntime, and KrunRuntime.
 
-use magikrun::runtimes::{KrunRuntime, RuntimeRegistry, WasmtimeRuntime, YoukiRuntime};
+use magikrun::runtimes::{KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime};
 use magikrun::{OciRuntime, Platform};
 
 // =============================================================================
@@ -56,31 +56,31 @@ fn test_registry_available_runtimes_includes_wasmtime() {
 }
 
 // =============================================================================
-// YoukiRuntime Tests
+// NativeRuntime Tests
 // =============================================================================
 
 #[test]
-fn test_youki_runtime_creation() {
-    let runtime = YoukiRuntime::new();
-    assert_eq!(runtime.name(), "youki");
+fn test_native_runtime_creation() {
+    let runtime = NativeRuntime::new();
+    assert_eq!(runtime.name(), "native");
 }
 
 #[test]
-fn test_youki_runtime_with_custom_state_root() {
+fn test_native_runtime_with_custom_state_root() {
     use std::path::PathBuf;
 
-    let runtime = YoukiRuntime::with_state_root(PathBuf::from("/tmp/custom-youki"));
-    assert_eq!(runtime.name(), "youki");
+    let runtime = NativeRuntime::with_state_root(PathBuf::from("/tmp/custom-native"));
+    assert_eq!(runtime.name(), "native");
 }
 
 #[test]
 #[cfg(not(target_os = "linux"))]
-fn test_youki_unavailable_on_non_linux() {
-    let runtime = YoukiRuntime::new();
+fn test_native_unavailable_on_non_linux() {
+    let runtime = NativeRuntime::new();
 
     assert!(
         !runtime.is_available(),
-        "youki should not be available on non-Linux"
+        "native should not be available on non-Linux"
     );
     assert!(runtime.unavailable_reason().is_some());
     assert!(
@@ -90,15 +90,15 @@ fn test_youki_unavailable_on_non_linux() {
 }
 
 #[cfg(target_os = "linux")]
-mod youki_linux_tests {
+mod native_linux_tests {
     use super::*;
     use std::path::Path;
 
     #[test]
-    fn test_youki_checks_namespaces() {
-        let runtime = YoukiRuntime::new();
+    fn test_native_checks_namespaces() {
+        let runtime = NativeRuntime::new();
 
-        // If namespaces exist, youki should be available (assuming we have permissions)
+        // If namespaces exist, native should be available (assuming we have permissions)
         if Path::new("/proc/self/ns/pid").exists() {
             // May or may not be available depending on permissions
             let _ = runtime.is_available();
@@ -195,8 +195,8 @@ fn test_runtime_trait_object_safe() {
     let wasmtime = WasmtimeRuntime::new();
     accept_runtime(&wasmtime);
 
-    let youki = YoukiRuntime::new();
-    accept_runtime(&youki);
+    let native = NativeRuntime::new();
+    accept_runtime(&native);
 
     let krun = KrunRuntime::new();
     accept_runtime(&krun);
@@ -214,7 +214,7 @@ fn test_runtime_in_vec() {
     // Should be able to collect runtimes in a Vec
     let runtimes: Vec<Box<dyn OciRuntime>> = vec![
         Box::new(WasmtimeRuntime::new()),
-        Box::new(YoukiRuntime::new()),
+        Box::new(NativeRuntime::new()),
         Box::new(KrunRuntime::new()),
     ];
 
@@ -222,7 +222,7 @@ fn test_runtime_in_vec() {
 
     let names: Vec<&str> = runtimes.iter().map(|r| r.name()).collect();
     assert!(names.contains(&"wasmtime"));
-    assert!(names.contains(&"youki"));
+    assert!(names.contains(&"native"));
     assert!(names.contains(&"krun"));
 }
 
@@ -235,22 +235,22 @@ fn test_runtime_in_vec() {
 async fn test_unavailable_runtime_operations_fail() {
     use std::path::Path;
 
-    let youki = YoukiRuntime::new();
+    let native = NativeRuntime::new();
 
     // All operations should fail on non-Linux
-    let result = youki.create("test", Path::new("/tmp/bundle")).await;
+    let result = native.create("test", Path::new("/tmp/bundle")).await;
     assert!(result.is_err());
 
-    let result = youki.start("test").await;
+    let result = native.start("test").await;
     assert!(result.is_err());
 
-    let result = youki.state("test").await;
+    let result = native.state("test").await;
     assert!(result.is_err());
 
-    let result = youki.kill("test", magikrun::Signal::Term, false).await;
+    let result = native.kill("test", magikrun::Signal::Term, false).await;
     assert!(result.is_err());
 
-    let result = youki.delete("test", false).await;
+    let result = native.delete("test", false).await;
     assert!(result.is_err());
 }
 
