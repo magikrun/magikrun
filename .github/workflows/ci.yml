@@ -542,12 +542,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
+      - name: Find libclang path (Linux)
+        if: runner.os == 'Linux'
+        id: libclang
+        run: |
+          LIBCLANG_PATH=$(find /usr/lib -name "libclang*.so*" -type f 2>/dev/null | head -1 | xargs dirname)
+          echo "path=$LIBCLANG_PATH" >> $GITHUB_OUTPUT
+          echo "Found libclang at: $LIBCLANG_PATH"
+
       - name: Build (release)
         run: cargo build --release
         env:
           PKG_CONFIG_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig' || '/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig' }}
           LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib' || '' }}
-          LIBCLANG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/llvm/lib' || '' }}
+          LIBCLANG_PATH: ${{ runner.os == 'Linux' && steps.libclang.outputs.path || '/opt/homebrew/opt/llvm/lib' }}
           LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
           DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
 
