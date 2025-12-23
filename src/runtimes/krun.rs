@@ -149,7 +149,10 @@ mod platform {
             {
                 use std::path::Path;
                 if !Path::new("/dev/kvm").exists() {
-                    return (false, Some("KVM not available: /dev/kvm does not exist".to_string()));
+                    return (
+                        false,
+                        Some("KVM not available: /dev/kvm does not exist".to_string()),
+                    );
                 }
             }
 
