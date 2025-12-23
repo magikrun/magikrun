@@ -1,0 +1,120 @@
+# =============================================================================
+# Code Quality Workflow
+# =============================================================================
+#
+# Runs Clippy with strict warning policies on all supported platforms.
+# Modeled after libkrun's code-quality.yml workflow.
+#
+# Platforms:
+#   - Linux x86_64: Full feature set (youki + wasmtime + krun)
+#   - Linux aarch64: Full feature set
+#   - macOS arm64: Partial (wasmtime + krun via HVF)
+#
+# =============================================================================
+
+name: Code Quality
+
+on: [pull_request]
+
+jobs:
+  # ===========================================================================
+  # Linux x86_64
+  # ===========================================================================
+  code-quality-linux-x86_64:
+    name: Clippy (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yqq --no-install-recommends \
+            libkrun-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x86_64-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-cargo-clippy-
+
+      - name: Clippy (default - all warnings as errors)
+        run: cargo clippy --locked -- -D warnings
+
+  # ===========================================================================
+  # Linux aarch64
+  # ===========================================================================
+  code-quality-linux-aarch64:
+    name: Clippy (Linux aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yqq --no-install-recommends \
+            libkrun-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-aarch64-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-aarch64-cargo-clippy-
+
+      - name: Clippy (default - all warnings as errors)
+        run: cargo clippy --locked -- -D warnings
+
+  # ===========================================================================
+  # macOS arm64
+  # ===========================================================================
+  code-quality-macos:
+    name: Clippy (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          brew install libkrun
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-cargo-clippy-
+
+      - name: Clippy (default - all warnings as errors)
+        run: cargo clippy --locked -- -D warnings

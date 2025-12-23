@@ -1,8 +1,77 @@
-//! OCI Runtime Bundle building.
+//! # OCI Runtime Bundle Building
 //!
-//! Converts pulled OCI images into OCI Runtime bundles (rootfs + config.json).
-//! This is the standard OCI Runtime Spec format consumed by runtimes like
-//! youki, runc, crun, etc.
+//! Converts pulled OCI images into OCI Runtime Bundles (rootfs + config.json).
+//! This is the standard format consumed by OCI-compliant runtimes like youki,
+//! runc, crun, and others.
+//!
+//! ## Bundle Formats
+//!
+//! | Format          | Contents                        | Runtime Backend     |
+//! |-----------------|--------------------------------|---------------------|
+//! | `Bundle::OciRuntime` | `rootfs/` + `config.json` | YoukiRuntime       |
+//! | `Bundle::Wasm`       | `module.wasm` + WASI config | WasmtimeRuntime    |
+//! | `Bundle::MicroVm`    | `rootfs/` + command/env     | KrunRuntime        |
+//!
+//! ## Security Model
+//!
+//! Bundle building is a **critical security boundary**. Malicious images can
+//! attempt to escape containment during layer extraction.
+//!
+//! ### Path Traversal Protection
+//!
+//! All tar entries are validated before extraction:
+//! - Paths containing `..` are rejected immediately
+//! - Absolute paths (starting with `/`) are rejected
+//! - Symlinks pointing outside the rootfs are blocked
+//!
+//! ```rust,ignore
+//! // This is rejected:
+//! let path = "../../../etc/passwd";
+//! if path.contains("..") || path.starts_with('/') {
+//!     return Err(Error::PathTraversal { path });
+//! }
+//! ```
+//!
+//! ### Size Limit Enforcement
+//!
+//! Extraction tracks cumulative size and enforces limits:
+//! - `MAX_LAYER_SIZE`: Per-layer compressed size limit (512 MiB)
+//! - `MAX_ROOTFS_SIZE`: Total extracted size limit (4 GiB)
+//!
+//! This prevents both disk exhaustion and compression bomb attacks.
+//!
+//! ### Whiteout File Handling
+//!
+//! OCI images use "whiteout" files to mark deletions in overlay layers:
+//! - `.wh.<filename>` marks `<filename>` for deletion
+//! - `.wh..wh..opq` marks an entire directory as opaque
+//!
+//! Whiteout processing is safe because it only removes files *within* the
+//! rootfs, never following symlinks or escaping the extraction directory.
+//!
+//! ## Namespace Sharing for Pods
+//!
+//! While this crate doesn't implement pod semantics, it provides
+//! [`BundleBuilder::build_oci_bundle_with_namespaces`] to generate bundles
+//! that join existing namespaces. The `magikpod` crate uses this to create
+//! shared network/IPC namespaces.
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::{BundleBuilder, OciContainerConfig};
+//!
+//! let builder = BundleBuilder::new()?;
+//! let bundle = builder.build_oci_bundle(&image, &OciContainerConfig {
+//!     name: "my-container".to_string(),
+//!     command: Some(vec!["/bin/sh".to_string()]),
+//!     ..Default::default()
+//! })?;
+//!
+//! // Bundle is now at bundle.path() with:
+//! //   - rootfs/ directory
+//! //   - config.json (OCI runtime spec)
+//! ```
 
 use crate::constants::{MAX_LAYER_SIZE, MAX_ROOTFS_SIZE, OCI_RUNTIME_SPEC_VERSION};
 use crate::error::{Error, Result};
@@ -14,9 +83,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tar::Archive;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
-/// Bundle format expected by a runtime.
+/// Bundle format specifier for targeting specific runtimes.
+///
+/// Used to request a specific bundle layout from [`BundleBuilder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BundleFormat {
     /// OCI Runtime Bundle (rootfs + config.json).
@@ -27,7 +98,36 @@ pub enum BundleFormat {
     MicroVm,
 }
 
-/// A built bundle ready for execution.
+/// A built bundle ready for execution by an OCI runtime.
+///
+/// Bundles are the bridge between OCI images and runtime execution. Each
+/// variant contains the files and configuration needed for its runtime.
+///
+/// ## Variants
+///
+/// ### `OciRuntime`
+/// Standard OCI Runtime Bundle with:
+/// - `path/rootfs/` - Extracted filesystem layers
+/// - `path/config.json` - OCI runtime spec configuration
+///
+/// Used by: [`YoukiRuntime`](crate::runtimes::YoukiRuntime)
+///
+/// ### `Wasm`
+/// WebAssembly module with WASI configuration:
+/// - `module` - Path to `.wasm` file
+/// - `wasi_args` - Command-line arguments
+/// - `wasi_env` - Environment variables
+/// - `wasi_dirs` - Directory pre-opens
+///
+/// Used by: [`WasmtimeRuntime`](crate::runtimes::WasmtimeRuntime)
+///
+/// ### `MicroVm`
+/// MicroVM rootfs with execution configuration:
+/// - `rootfs` - Guest filesystem
+/// - `command` - Init process path
+/// - `env` - Environment variables
+///
+/// Used by: [`KrunRuntime`](crate::runtimes::KrunRuntime)
 #[derive(Debug, Clone)]
 pub enum Bundle {
     /// OCI Runtime Bundle.
@@ -87,7 +187,37 @@ impl Bundle {
 // Bundle Builder
 // =============================================================================
 
-/// Builder for OCI runtime bundles.
+/// Builder for OCI runtime bundles from pulled images.
+///
+/// Extracts image layers to create runtime-specific bundles with security
+/// validation and size limit enforcement.
+///
+/// ## Security Features
+///
+/// - **Path traversal protection**: Rejects `..` and absolute paths in tar entries
+/// - **Size limits**: Enforces `MAX_LAYER_SIZE` and `MAX_ROOTFS_SIZE`
+/// - **Whiteout handling**: Safely processes layer deletions
+/// - **Atomic extraction**: Prevents partial bundles on failure
+///
+/// ## Caching
+///
+/// Bundles are cached by image digest. Subsequent builds for the same
+/// image return the cached bundle without re-extraction.
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let builder = BundleBuilder::new()?;
+///
+/// // Build standard OCI bundle
+/// let bundle = builder.build_oci_bundle(&image, &config)?;
+///
+/// // Build with namespace paths for pod sharing
+/// let ns_paths = HashMap::from([
+///     ("network".to_string(), PathBuf::from("/proc/1234/ns/net")),
+/// ]);
+/// let pod_bundle = builder.build_oci_bundle_with_namespaces(&image, &config, &ns_paths)?;
+/// ```
 pub struct BundleBuilder {
     /// Base directory for bundles.
     base_dir: PathBuf,
@@ -203,13 +333,13 @@ impl BundleBuilder {
 
     /// Returns the bundle path for a given digest.
     fn bundle_path(&self, digest: &str) -> PathBuf {
-        let safe_digest = digest.replace(':', "-").replace('/', "-");
+        let safe_digest = digest.replace([':', '/'], "-");
         self.base_dir.join(&safe_digest)
     }
 
     /// Returns a unique bundle path (for namespace-joined containers).
     fn bundle_path_unique(&self, digest: &str) -> PathBuf {
-        let safe_digest = digest.replace(':', "-").replace('/', "-");
+        let safe_digest = digest.replace([':', '/'], "-");
         let unique_id = uuid::Uuid::now_v7();
         self.base_dir.join(format!("{}-{}", safe_digest, unique_id))
     }
@@ -275,6 +405,46 @@ impl BundleBuilder {
                         size: total_size,
                         limit: MAX_ROOTFS_SIZE,
                     });
+                }
+
+                // SECURITY: Validate symlink targets stay within rootfs
+                // This prevents symlink attacks where a malicious layer creates a symlink
+                // pointing outside the container, then a later layer writes through it.
+                if entry.header().entry_type().is_symlink()
+                    && let Ok(Some(target)) = entry.link_name()
+                {
+                    let target_str = target.to_string_lossy();
+                    // Absolute symlinks that escape or relative paths with .. are dangerous
+                    if target_str.starts_with('/') {
+                        // Absolute paths are relative to rootfs, but must not contain ..
+                        if target_str.contains("..") {
+                            return Err(Error::PathTraversal {
+                                path: format!("symlink target: {}", target_str),
+                            });
+                        }
+                    } else {
+                        // Relative symlink: resolve against entry's parent directory
+                        let entry_parent = path.parent().unwrap_or(Path::new(""));
+                        let resolved = entry_parent.join(&*target);
+                        let resolved_str = resolved.to_string_lossy();
+                        // Check if resolved path escapes via ..
+                        if resolved_str.contains("..") {
+                            // Normalize and check if it stays within bounds
+                            let mut depth: i32 = 0;
+                            for component in resolved.components() {
+                                match component {
+                                    std::path::Component::ParentDir => depth -= 1,
+                                    std::path::Component::Normal(_) => depth += 1,
+                                    _ => {}
+                                }
+                                if depth < 0 {
+                                    return Err(Error::PathTraversal {
+                                        path: format!("symlink target escapes rootfs: {}", target_str),
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Unpack
@@ -372,7 +542,36 @@ impl BundleBuilder {
 // Container Configuration (input for bundle building)
 // =============================================================================
 
-/// Container configuration for bundle building.
+/// Container configuration for OCI bundle building.
+///
+/// Provides the application-level settings that go into the OCI runtime
+/// spec's `process` section. This is the input for [`BundleBuilder::build_oci_bundle`].
+///
+/// ## Defaults
+///
+/// | Field | Default |
+/// |-------|------------------------------|
+/// | `command` | `["/bin/sh"]` |
+/// | `working_dir` | `"/"` |
+/// | `user_id` | `0` (root) |
+/// | `group_id` | `0` (root) |
+/// | `hostname` | `"container"` |
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let config = OciContainerConfig {
+///     name: "my-app".to_string(),
+///     command: Some(vec!["/app/server".to_string(), "--port".to_string(), "8080".to_string()]),
+///     env: HashMap::from([
+///         ("ENV".to_string(), "production".to_string()),
+///     ]),
+///     working_dir: Some("/app".to_string()),
+///     ..Default::default()
+/// };
+/// ```
+///
+/// [`BundleBuilder::build_oci_bundle`]: BundleBuilder::build_oci_bundle
 #[derive(Debug, Clone, Default)]
 pub struct OciContainerConfig {
     /// Container name.
@@ -499,7 +698,43 @@ pub struct OciPids {
 // Layer Extraction Utilities
 // =============================================================================
 
-/// Extracts layers to a rootfs directory (standalone function).
+/// Extracts OCI image layers to a rootfs directory.
+///
+/// This is the core layer extraction function with full security validation.
+/// It can be used standalone or is called internally by [`BundleBuilder`].
+///
+/// ## Security Checks
+///
+/// For each tar entry:
+/// 1. **Path traversal**: Rejects paths containing `..` or starting with `/`
+/// 2. **Size tracking**: Accumulates extracted size, fails at `MAX_ROOTFS_SIZE`
+/// 3. **Layer size**: Each layer checked against `MAX_LAYER_SIZE`
+/// 4. **Whiteouts**: Safely processes `.wh.*` deletion markers
+///
+/// ## Layer Application
+///
+/// Layers are applied in order, with each layer:
+/// - Overwriting existing files from earlier layers
+/// - Processing whiteout files to remove content
+/// - Creating new directories and files
+///
+/// ## Arguments
+///
+/// * `layers` - Ordered list of layer info (bottom to top)
+/// * `rootfs` - Target directory for extraction
+/// * `storage` - Blob store containing layer data
+///
+/// ## Errors
+///
+/// - [`Error::BlobNotFound`]: Layer digest not in storage
+/// - [`Error::ImageTooLarge`]: Size limits exceeded
+/// - [`Error::PathTraversal`]: Malicious path detected
+/// - [`Error::LayerExtractionFailed`]: Tar parsing or I/O error
+///
+/// [`Error::BlobNotFound`]: crate::error::Error::BlobNotFound
+/// [`Error::ImageTooLarge`]: crate::error::Error::ImageTooLarge
+/// [`Error::PathTraversal`]: crate::error::Error::PathTraversal
+/// [`Error::LayerExtractionFailed`]: crate::error::Error::LayerExtractionFailed
 pub fn extract_layers_to_rootfs(
     layers: &[LayerInfo],
     rootfs: &Path,
@@ -564,6 +799,46 @@ pub fn extract_layers_to_rootfs(
                     size: total_size,
                     limit: MAX_ROOTFS_SIZE,
                 });
+            }
+
+            // SECURITY: Validate symlink targets stay within rootfs
+            // This prevents symlink attacks where a malicious layer creates a symlink
+            // pointing outside the container, then a later layer writes through it.
+            if entry.header().entry_type().is_symlink()
+                && let Ok(Some(target)) = entry.link_name()
+            {
+                let target_str = target.to_string_lossy();
+                // Absolute symlinks that escape or relative paths with .. are dangerous
+                if target_str.starts_with('/') {
+                    // Absolute paths are relative to rootfs, but must not contain ..
+                    if target_str.contains("..") {
+                        return Err(Error::PathTraversal {
+                            path: format!("symlink target: {}", target_str),
+                        });
+                    }
+                } else {
+                    // Relative symlink: resolve against entry's parent directory
+                    let entry_parent = path.parent().unwrap_or(Path::new(""));
+                    let resolved = entry_parent.join(&*target);
+                    let resolved_str = resolved.to_string_lossy();
+                    // Check if resolved path escapes via ..
+                    if resolved_str.contains("..") {
+                        // Normalize and check if it stays within bounds
+                        let mut depth: i32 = 0;
+                        for component in resolved.components() {
+                            match component {
+                                std::path::Component::ParentDir => depth -= 1,
+                                std::path::Component::Normal(_) => depth += 1,
+                                _ => {}
+                            }
+                            if depth < 0 {
+                                return Err(Error::PathTraversal {
+                                    path: format!("symlink target escapes rootfs: {}", target_str),
+                                });
+                            }
+                        }
+                    }
+                }
             }
 
             // Unpack

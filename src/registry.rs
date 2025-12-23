@@ -1,9 +1,80 @@
-//! OCI registry client for image pulling.
+//! # OCI Registry Client for Image Pulling
 //!
-//! Handles pulling OCI images from container registries with:
-//! - Multi-arch manifest resolution
-//! - Layer deduplication via content-addressed storage
-//! - Size limits and validation
+//! Handles pulling OCI images from container registries with security-first
+//! design, including input validation, size limits, and timeout enforcement.
+//!
+//! ## Features
+//!
+//! - **Multi-arch resolution**: Automatically selects platform-appropriate manifest
+//! - **Layer deduplication**: Content-addressed storage prevents redundant downloads
+//! - **Size limits**: Enforces `MAX_LAYER_SIZE` and `MAX_LAYERS` constants
+//! - **Timeouts**: All network operations bounded by `IMAGE_PULL_TIMEOUT`
+//!
+//! ## Security Model
+//!
+//! ### Image Reference Validation
+//!
+//! All image references are validated before use:
+//! - Length check against `MAX_IMAGE_REF_LEN` (512 bytes)
+//! - Character allowlist validation (alphanumeric + `/:.-_@`)
+//! - Proper format parsing via `oci-distribution`
+//!
+//! This prevents:
+//! - Buffer overflow via long references
+//! - Injection attacks via special characters
+//! - Registry confusion via malformed URLs
+//!
+//! ### Manifest Resolution
+//!
+//! For multi-platform images (Image Index), the client:
+//! 1. Detects the host platform (OS + arch)
+//! 2. Finds matching manifest in the index
+//! 3. Pulls the platform-specific manifest
+//!
+//! If no matching platform is found, the error includes available platforms
+//! to aid debugging.
+//!
+//! ### Layer Pulling
+//!
+//! Layers are:
+//! 1. Checked against blob store for deduplication
+//! 2. Validated for size before download
+//! 3. Downloaded with timeout enforcement
+//! 4. Stored with content verification (see [`BlobStore::put_blob`])
+//!
+//! ## Authentication
+//!
+//! Currently supports:
+//! - Anonymous access (default)
+//! - Basic authentication via [`RegistryClient::with_auth`]
+//!
+//! OAuth/bearer token authentication should be added for production use
+//! with private registries.
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::{pull_image, BlobStore};
+//! use std::sync::Arc;
+//!
+//! #[tokio::main]
+//! async fn main() -> magikrun::Result<()> {
+//!     let storage = Arc::new(BlobStore::new()?);
+//!     
+//!     // Pull with validation and size limits
+//!     let image = pull_image("alpine:3.18", &storage).await?;
+//!     
+//!     println!("Pulled {} ({} layers)", image.reference, image.layers.len());
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## WASM Image Detection
+//!
+//! The [`is_wasm_image`] helper detects WASM-specific image references,
+//! allowing callers to route to the appropriate runtime.
+//!
+//! [`BlobStore::put_blob`]: crate::storage::BlobStore::put_blob
 
 use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_IMAGE_REF_LEN, MAX_LAYERS, MAX_LAYER_SIZE};
 use crate::error::{Error, Result};
@@ -15,7 +86,27 @@ use oci_distribution::{Client, Reference};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-/// Handle to a pulled image.
+/// Handle to a successfully pulled OCI image.
+///
+/// Contains all metadata needed to build a bundle from the image,
+/// including resolved layers and platform information.
+///
+/// ## Layer Order
+///
+/// The `layers` vector is ordered bottom-to-top:
+/// - `layers[0]` is the base layer
+/// - `layers[n-1]` is the topmost layer
+///
+/// When extracting, layers are applied in order, with later layers
+/// overwriting earlier ones (and whiteouts removing files).
+///
+/// ## Content Addressing
+///
+/// All digests (`digest`, `config_digest`, `layers[*].digest`) reference
+/// blobs in the [`BlobStore`]. The blobs are available after a successful
+/// [`pull_image`] call.
+///
+/// [`BlobStore`]: crate::storage::BlobStore
 #[derive(Debug, Clone)]
 pub struct ImageHandle {
     /// Original image reference.
@@ -30,7 +121,10 @@ pub struct ImageHandle {
     pub config_digest: String,
 }
 
-/// Information about an image layer.
+/// Metadata about an OCI image layer.
+///
+/// Layers are compressed tar archives containing filesystem changes.
+/// The `digest` is the content hash of the compressed blob.
 #[derive(Debug, Clone)]
 pub struct LayerInfo {
     /// Layer digest.
@@ -41,9 +135,30 @@ pub struct LayerInfo {
     pub media_type: String,
 }
 
-/// OCI registry client wrapper.
+/// OCI registry client for image operations.
+///
+/// Wraps the `oci-distribution` client with authentication configuration.
+/// Currently used internally by [`pull_image`]; may be exposed for direct
+/// registry access in the future.
+///
+/// ## Authentication
+///
+/// | Method | Constructor |
+/// |--------|-------------|
+/// | Anonymous | [`RegistryClient::new`] |
+/// | Basic auth | [`RegistryClient::with_auth`] |
+///
+/// For OAuth/bearer tokens (e.g., GCR, ECR), extend this struct.
 pub struct RegistryClient {
+    /// The underlying OCI distribution client.
+    ///
+    /// Reserved for future direct registry operations (e.g., push, catalog).
+    #[allow(dead_code)] // Reserved for future authenticated registry operations
     client: Client,
+    /// Authentication configuration for registry access.
+    ///
+    /// Reserved for future direct registry operations.
+    #[allow(dead_code)] // Reserved for future authenticated registry operations
     auth: RegistryAuth,
 }
 
@@ -77,7 +192,48 @@ impl Default for RegistryClient {
     }
 }
 
-/// Pulls an image from a registry.
+/// Pulls an OCI image from a registry with full validation.
+///
+/// This is the primary entry point for image pulling. It:
+/// 1. Validates the image reference format and length
+/// 2. Fetches the manifest with timeout
+/// 3. Resolves multi-arch images to the current platform
+/// 4. Downloads missing layers to blob storage
+/// 5. Returns an [`ImageHandle`] for bundle building
+///
+/// ## Security
+///
+/// - Reference validated against `MAX_IMAGE_REF_LEN` and character allowlist
+/// - Layer count validated against `MAX_LAYERS`
+/// - Layer size validated against `MAX_LAYER_SIZE`
+/// - All operations bounded by `IMAGE_PULL_TIMEOUT`
+/// - Layer content verified by [`BlobStore::put_blob`]
+///
+/// ## Deduplication
+///
+/// Already-cached layers (by digest) are skipped. Multiple images sharing
+/// common base layers only download unique layers.
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let storage = Arc::new(BlobStore::new()?);
+/// let image = pull_image("nginx:latest", &storage).await?;
+/// println!("Pulled {} with {} layers", image.reference, image.layers.len());
+/// ```
+///
+/// ## Errors
+///
+/// - [`Error::InvalidImageReference`]: Malformed or overly long reference
+/// - [`Error::ImagePullFailed`]: Registry unreachable or image not found
+/// - [`Error::ImageTooLarge`]: Layer exceeds size limit
+/// - [`Error::Timeout`]: Operation exceeded `IMAGE_PULL_TIMEOUT`
+///
+/// [`Error::InvalidImageReference`]: crate::error::Error::InvalidImageReference
+/// [`Error::ImagePullFailed`]: crate::error::Error::ImagePullFailed
+/// [`Error::ImageTooLarge`]: crate::error::Error::ImageTooLarge
+/// [`Error::Timeout`]: crate::error::Error::Timeout
+/// [`BlobStore::put_blob`]: crate::storage::BlobStore::put_blob
 pub async fn pull_image(image_ref: &str, storage: &Arc<BlobStore>) -> Result<ImageHandle> {
     // Validate reference length
     if image_ref.len() > MAX_IMAGE_REF_LEN {
@@ -312,7 +468,24 @@ async fn resolve_manifest(
     }
 }
 
-/// Checks if an image reference looks like a WASM module.
+/// Checks if an image reference appears to be a WASM module.
+///
+/// Uses heuristics to detect WASM images for routing to the appropriate
+/// runtime. Detection is based on naming conventions, not content inspection.
+///
+/// ## Detected Patterns
+///
+/// | Pattern | Example | Detected |
+/// |---------|---------|----------|
+/// | `.wasm` suffix | `app.wasm` | Yes |
+/// | `:wasm` tag | `myapp:wasm` | Yes |
+/// | `/wasm/` path | `ghcr.io/wasm/runtime` | Yes |
+/// | `+wasm` variant | `myapp:v1+wasm` | Yes |
+///
+/// ## Limitations
+///
+/// This does not inspect the image manifest. An image with a normal name
+/// could still contain WASM content (check annotations after pulling).
 pub fn is_wasm_image(reference: &str) -> bool {
     reference.ends_with(".wasm")
         || reference.contains(":wasm")

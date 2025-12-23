@@ -1,12 +1,88 @@
-//! Platform detection and capability enumeration.
+//! # Platform Detection and Capability Enumeration
 //!
-//! Detects OS, architecture, and available capabilities at runtime
-//! to determine which runtimes can be used.
+//! Detects the host OS, CPU architecture, and available isolation capabilities
+//! at runtime. This information drives runtime selection in [`RuntimeRegistry`].
+//!
+//! ## Detection Strategy
+//!
+//! Platform detection uses compile-time (`cfg!`) and runtime checks:
+//!
+//! | Capability    | Detection Method                           | False Positive Risk |
+//! |---------------|-------------------------------------------|---------------------|
+//! | `Namespaces`  | `/proc/self/ns/pid` exists               | Low                 |
+//! | `Cgroups`     | `/sys/fs/cgroup` exists                   | Low                 |
+//! | `Seccomp`     | `/proc/self/seccomp` or sysctl exists     | Low                 |
+//! | `Hypervisor`  | KVM: `/dev/kvm` accessible; HVF: context  | Medium              |
+//! | `WasmRuntime` | Always true (pure Rust)                   | None                |
+//!
+//! ## Security Considerations
+//!
+//! ### Capability Spoofing
+//!
+//! An attacker with filesystem access could create fake capability indicators:
+//! - Create `/dev/kvm` as a regular file → `Hypervisor` would be incorrectly detected
+//! - However, actual VM creation would fail, so this is a false positive not a security hole
+//!
+//! **Mitigation**: Always handle runtime unavailability gracefully. Detection is
+//! a hint, not a guarantee. The actual runtime constructors perform real checks.
+//!
+//! ### Race Conditions
+//!
+//! Capabilities can change between detection and use:
+//! - `/dev/kvm` could be removed after detection
+//! - Cgroup filesystem could be unmounted
+//!
+//! **Mitigation**: Runtimes validate availability on each operation, not just
+//! at construction time.
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::{Platform, Capability};
+//!
+//! let platform = Platform::detect();
+//!
+//! if platform.supports_native_containers() {
+//!     println!("Can use YoukiRuntime (Linux namespaces + cgroups)");
+//! }
+//!
+//! if platform.has_hypervisor() {
+//!     println!("Can use KrunRuntime (hardware virtualization)");
+//! }
+//!
+//! // WASM is always available
+//! assert!(platform.capabilities.contains(&Capability::WasmRuntime));
+//! ```
+//!
+//! [`RuntimeRegistry`]: crate::runtimes::RuntimeRegistry
 
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Detected platform information.
+/// Detected platform information for runtime selection.
+///
+/// Created by [`Platform::detect`] to capture OS, architecture, and
+/// available isolation capabilities.
+///
+/// ## Thread Safety
+///
+/// `Platform` is `Clone` and can be shared across threads. The detection
+/// is a one-time operation; capabilities don't update automatically if
+/// the system changes.
+///
+/// ## Usage
+///
+/// ```rust,ignore
+/// let platform = Platform::detect();
+///
+/// // Check capabilities
+/// if platform.supports_native_containers() {
+///     // YoukiRuntime available
+/// }
+///
+/// // Get OCI platform string for image pulling
+/// let oci_platform = platform.oci_platform(); // e.g., "linux/amd64"
+/// ```
 #[derive(Debug, Clone)]
 pub struct Platform {
     /// Operating system.
@@ -19,7 +95,9 @@ pub struct Platform {
     pub capabilities: HashSet<Capability>,
 }
 
-/// Operating system.
+/// Detected operating system.
+///
+/// Determined at compile time via `cfg!` macros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Os {
     Linux,
@@ -28,7 +106,9 @@ pub enum Os {
     Unknown,
 }
 
-/// CPU architecture.
+/// Detected CPU architecture.
+///
+/// Determined at compile time via `cfg!` macros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arch {
     Amd64,
@@ -37,7 +117,19 @@ pub enum Arch {
     Unknown,
 }
 
-/// Platform capabilities that affect runtime availability.
+/// Platform capabilities that determine runtime availability.
+///
+/// Each capability represents an isolation technology or feature.
+/// Capabilities are detected at runtime, not compile time.
+///
+/// ## Detection vs. Usability
+///
+/// A detected capability does not guarantee usability:
+/// - `Namespaces` may require root/CAP_SYS_ADMIN
+/// - `Cgroups` may require cgroup v2 unified hierarchy
+/// - `Hypervisor` may require KVM module loaded with access
+///
+/// Runtime constructors perform additional validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
     /// Linux namespaces (pid, net, mnt, etc.)

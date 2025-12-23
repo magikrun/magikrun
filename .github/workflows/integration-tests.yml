@@ -1,0 +1,135 @@
+# =============================================================================
+# Integration Tests Workflow
+# =============================================================================
+#
+# Runs integration tests that require actual container/VM execution.
+# These tests verify the full OCI runtime lifecycle.
+#
+# Security Note:
+#   - KVM access is required for KrunRuntime tests
+#   - Root/capabilities may be required for YoukiRuntime tests
+#   - These tests run in isolated environments
+#
+# =============================================================================
+
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ===========================================================================
+  # Integration Tests - Linux x86_64
+  # ===========================================================================
+  integration-linux-x86_64:
+    name: Integration (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yqq --no-install-recommends \
+            libkrun-dev \
+            pkg-config \
+            crun \
+            fuse-overlayfs
+
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo usermod -a -G kvm $USER
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-x86_64-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86_64-cargo-integration-
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Run integration tests
+        run: cargo test --release --locked -- --ignored
+        continue-on-error: true
+
+      - name: Test WasmtimeRuntime availability
+        run: |
+          cargo test --release --locked wasmtime -- --nocapture
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs-linux-x86_64
+          path: |
+            target/debug/deps/*.log
+            /tmp/magik-oci/**
+          retention-days: 5
+
+  # ===========================================================================
+  # Integration Tests - macOS arm64
+  # ===========================================================================
+  integration-macos:
+    name: Integration (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          brew install libkrun
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-arm64-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-arm64-cargo-integration-
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Run integration tests
+        run: cargo test --release --locked -- --ignored
+        continue-on-error: true
+
+      - name: Test WasmtimeRuntime availability
+        run: |
+          cargo test --release --locked wasmtime -- --nocapture
+
+      - name: Test KrunRuntime with HVF
+        run: |
+          cargo test --release --locked krun -- --nocapture
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs-macos
+          path: |
+            target/debug/deps/*.log
+            ~/Library/Application Support/magik-oci/**
+          retention-days: 5

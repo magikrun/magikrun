@@ -1,11 +1,91 @@
-//! Krun OCI Runtime - MicroVM execution.
+//! # Krun OCI Runtime - MicroVM Execution
 //!
-//! This module implements the `OciRuntime` trait using libkrun for
-//! microVM-based isolation. Each container runs inside its own VM.
+//! Implements the [`OciRuntime`] trait using libkrun for microVM-based
+//! isolation. Provides the strongest isolation guarantee via hardware
+//! virtualization (KVM on Linux, Hypervisor.framework on macOS).
 //!
-//! For multi-container pods, the pod layer builds a composite rootfs
-//! containing all container bundles plus an init script, then treats
-//! the entire VM as a single OCI container.
+//! ## Platform Requirements
+//!
+//! | Platform | Hypervisor          | Detection                    |
+//! |----------|---------------------|------------------------------|
+//! | Linux    | KVM                 | `/dev/kvm` accessible        |
+//! | macOS    | Hypervisor.framework| `krun_create_ctx()` succeeds |
+//! | Windows  | Not supported       | Always unavailable           |
+//!
+//! ## Security Model
+//!
+//! MicroVMs provide hardware-level isolation:
+//!
+//! - **CPU isolation**: Separate virtual CPU with its own register state
+//! - **Memory isolation**: Hardware-enforced memory boundaries (EPT/NPT)
+//! - **Device isolation**: No direct hardware access, virtio emulation
+//! - **Kernel isolation**: Guest runs its own kernel, not shared with host
+//!
+//! This is the **strongest isolation** available, suitable for untrusted
+//! workloads. The attack surface is limited to the Virtual Machine Monitor.
+//!
+//! ## Resource Limits
+//!
+//! VMs are configured with bounded resources:
+//!
+//! | Resource | Default              | Maximum               |
+//! |----------|----------------------|-----------------------|
+//! | vCPUs    | `DEFAULT_VCPUS` (1)  | `MAX_VCPUS` (8)       |
+//! | Memory   | `DEFAULT_VM_MEMORY_MIB` (512) | `MAX_VM_MEMORY_MIB` (4096) |
+//!
+//! ## FFI Safety
+//!
+//! This module uses `krun-sys` for FFI calls to libkrun. All unsafe blocks
+//! include SAFETY comments explaining invariants:
+//!
+//! ```rust,ignore
+//! // SAFETY: krun_create_ctx is safe to call, returns < 0 on failure
+//! unsafe {
+//!     let ctx = krun_sys::krun_create_ctx();
+//!     // ...
+//! }
+//! ```
+//!
+//! ### Context Lifecycle
+//!
+//! Each VM has a libkrun context that must be freed:
+//! 1. `krun_create_ctx()` - Creates context
+//! 2. `krun_set_*()` - Configures VM
+//! 3. `krun_start_enter()` - Runs VM (blocks until exit)
+//! 4. `krun_free_ctx()` - Releases resources
+//!
+//! Context cleanup is handled in `kill()` and `delete()` to prevent leaks.
+//!
+//! ## Pod Semantics
+//!
+//! For multi-container pods, the `magikpod` crate builds a composite
+//! rootfs containing all container bundles plus an init script. The
+//! entire VM is treated as a single OCI container.
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::runtimes::KrunRuntime;
+//! use magikrun::OciRuntime;
+//!
+//! #[tokio::main]
+//! async fn main() -> magikrun::Result<()> {
+//!     let runtime = KrunRuntime::new();
+//!     
+//!     if !runtime.is_available() {
+//!         eprintln!("krun: {}", runtime.unavailable_reason().unwrap());
+//!         return Ok(());
+//!     }
+//!     
+//!     runtime.create("my-vm", "/path/to/bundle".as_ref()).await?;
+//!     runtime.start("my-vm").await?; // Blocks until VM exits
+//!     runtime.delete("my-vm", false).await?;
+//!     
+//!     Ok(())
+//! }
+//! ```
+//!
+//! [`OciRuntime`]: crate::runtime::OciRuntime
 
 use crate::error::{Error, Result};
 use crate::runtime::{ContainerState, ContainerStatus, OciRuntime, Signal};
@@ -14,20 +94,41 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
-use crate::constants::{DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_VCPUS, MAX_VM_MEMORY_MIB};
+use crate::constants::{validate_container_id, DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS};
 
 /// libkrun context handle.
 type KrunCtx = u32;
 
-/// Krun OCI runtime implementation.
+/// Krun OCI runtime for microVM-based isolation.
+///
+/// Provides the strongest isolation via hardware virtualization.
+/// Requires KVM (Linux) or Hypervisor.framework (macOS).
+///
+/// ## Thread Safety
+///
+/// This struct is thread-safe (`Send + Sync`). Container state is protected
+/// by an internal `RwLock`. Note that `krun_start_enter()` is a blocking
+/// call that runs the VM on the calling thread.
+///
+/// ## Context Management
+///
+/// Each VM has an associated libkrun context (`KrunCtx`). Contexts are:
+/// - Created in `create()`
+/// - Used in `start()` for `krun_start_enter()`
+/// - Freed in `kill()` or `delete()`
+///
+/// Failing to free contexts leaks memory and VM resources.
 pub struct KrunRuntime {
     available: bool,
     reason: Option<String>,
     containers: RwLock<HashMap<String, VmContainer>>,
 }
 
+/// Internal state tracking for a microVM container.
+///
+/// Holds the libkrun context handle and container metadata.
 struct VmContainer {
     bundle: PathBuf,
     status: ContainerStatus,
@@ -157,6 +258,27 @@ impl OciRuntime for KrunRuntime {
     async fn create(&self, id: &str, bundle: &Path) -> Result<()> {
         debug!("Creating microVM container {} from bundle {}", id, bundle.display());
 
+        // SECURITY: Validate container ID format
+        validate_container_id(id).map_err(|reason| {
+            Error::InvalidContainerId {
+                id: id.to_string(),
+                reason: reason.to_string(),
+            }
+        })?;
+
+        // SECURITY: Check container limit before creating context
+        {
+            let containers = self.containers.read().map_err(|e| {
+                Error::Internal(format!("lock poisoned: {}", e))
+            })?;
+            if containers.len() >= MAX_CONTAINERS {
+                return Err(Error::ResourceExhausted(format!(
+                    "maximum container limit reached ({})",
+                    MAX_CONTAINERS
+                )));
+            }
+        }
+
         // Create libkrun context
         // SAFETY: krun_create_ctx is safe to call
         let ctx = unsafe { krun_sys::krun_create_ctx() };
@@ -181,6 +303,15 @@ impl OciRuntime for KrunRuntime {
                 unsafe { krun_sys::krun_free_ctx(ctx) };
                 Error::Internal(format!("lock poisoned: {}", e))
             })?;
+
+            // SECURITY: Re-check limit with write lock held (double-check locking)
+            if containers.len() >= MAX_CONTAINERS {
+                unsafe { krun_sys::krun_free_ctx(ctx) };
+                return Err(Error::ResourceExhausted(format!(
+                    "maximum container limit reached ({})",
+                    MAX_CONTAINERS
+                )));
+            }
 
             if containers.contains_key(id) {
                 unsafe { krun_sys::krun_free_ctx(ctx) };

@@ -1,6 +1,96 @@
-//! Content-addressed blob storage.
+//! # Content-Addressed Blob Storage
 //!
-//! Stores image layers and other blobs by their digest for deduplication.
+//! Stores OCI image layers and other blobs by their cryptographic digest
+//! for deduplication and integrity verification.
+//!
+//! ## Storage Model
+//!
+//! Blobs are stored in a two-level directory structure:
+//!
+//! ```text
+//! ~/.magik-oci/blobs/
+//! └── sha256/
+//!     ├── ab/
+//!     │   ├── abcd1234...  (blob content)
+//!     │   └── ab9f8e7d...  (blob content)
+//!     └── cd/
+//!         └── cdef5678...  (blob content)
+//! ```
+//!
+//! The first two hex characters form a "shard" directory to prevent
+//! filesystem performance degradation with many files.
+//!
+//! ## Security Model
+//!
+//! ### Digest Verification
+//!
+//! When storing blobs via [`BlobStore::put_blob`], the content hash is
+//! computed and verified against the provided digest. This prevents:
+//!
+//! - **Cache poisoning**: Malicious registries providing wrong content
+//! - **MITM attacks**: Network tampering detected before storage
+//! - **Corruption**: Disk errors detected on write
+//!
+//! ```rust,ignore
+//! // Content verification happens automatically:
+//! let digest = "sha256:e3b0c44..."; // Expected hash
+//! store.put_blob(digest, &data)?; // Fails if hash mismatches
+//! ```
+//!
+//! ### Path Traversal Protection
+//!
+//! Digests are validated before constructing paths:
+//! - Algorithm must be `sha256`, `sha384`, or `sha512`
+//! - Hash must contain only hexadecimal characters
+//! - Invalid digests return paths that won't exist
+//!
+//! ### Atomic Writes
+//!
+//! Blobs are written atomically via a temp file + rename pattern:
+//! 1. Write to `<path>.tmp`
+//! 2. Rename to `<path>`
+//!
+//! This prevents partial/corrupted blobs on crash.
+//!
+//! ## Deduplication
+//!
+//! Content-addressed storage provides automatic deduplication:
+//! - Same layer shared across images? One copy on disk.
+//! - Re-pull same image? Layers already cached.
+//!
+//! The [`BlobStore::has_blob`] method enables skipping redundant downloads.
+//!
+//! ## Garbage Collection
+//!
+//! The [`BlobStore::gc`] method removes unreferenced blobs. Callers must
+//! provide the list of digests that are still in use:
+//!
+//! ```rust,ignore
+//! let referenced = vec!["sha256:abc...".to_string()];
+//! let stats = store.gc(&referenced)?;
+//! println!("Freed {} bytes", stats.freed_bytes);
+//! ```
+//!
+//! **Warning**: GC is not safe during concurrent pulls. Use external
+//! locking or pause pulls during GC.
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::BlobStore;
+//! use sha2::{Sha256, Digest};
+//!
+//! let store = BlobStore::new()?;
+//!
+//! // Store with verification
+//! let data = b"hello world";
+//! let digest = format!("sha256:{}", hex::encode(Sha256::digest(data)));
+//! store.put_blob(&digest, data)?;
+//!
+//! // Retrieve
+//! let retrieved = store.get_blob(&digest)?;
+//! assert_eq!(retrieved, data);
+//! ```
 
 use crate::constants::BLOB_STORE_DIR;
 use crate::error::{Error, Result};
@@ -9,7 +99,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
-/// Content-addressed blob store.
+/// Content-addressed blob store for OCI layers.
+///
+/// Provides secure, deduplicated storage for image layers with:
+/// - SHA-256 content verification on write
+/// - Atomic write operations (crash-safe)
+/// - Path traversal protection in digest handling
+/// - Sharded directory structure for scalability
+///
+/// ## Thread Safety
+///
+/// `BlobStore` is safe to use from multiple threads. Each blob operation
+/// is independent, and atomic writes prevent corruption from concurrent
+/// access to the same blob.
+///
+/// ## Resource Cleanup
+///
+/// Blobs are not automatically removed. Use [`BlobStore::gc`] to clean up
+/// unreferenced blobs, or [`BlobStore::remove_blob`] for targeted removal.
 pub struct BlobStore {
     /// Base directory for blob storage.
     base_dir: PathBuf,
@@ -110,21 +217,24 @@ impl BlobStore {
     ///
     /// This function verifies that the data's hash matches the provided digest
     /// before storing, preventing content-addressed storage pollution attacks.
+    ///
+    /// Only SHA-256 digests are supported. SHA-384 and SHA-512 are rejected
+    /// to ensure all stored blobs are verified.
     pub fn put_blob(&self, digest: &str, data: &[u8]) -> Result<()> {
         // SECURITY: Verify content matches digest before storage
         let (algo, expected_hash) = digest.split_once(':').unwrap_or(("sha256", digest));
 
-        let computed_hash = match algo {
-            "sha256" => hex::encode(Sha256::digest(data)),
-            // For sha384/sha512, we'd need additional imports; for now, only verify sha256
-            _ => {
-                warn!("Cannot verify non-sha256 digest: {}", algo);
-                String::new()
-            }
-        };
+        // SECURITY: Only accept SHA-256 digests for verified storage
+        if algo != "sha256" {
+            return Err(Error::StorageWriteFailed(format!(
+                "unsupported digest algorithm '{}': only sha256 is supported",
+                algo
+            )));
+        }
 
-        // Only verify if we computed a hash (sha256)
-        if !computed_hash.is_empty() && computed_hash != expected_hash {
+        let computed_hash = hex::encode(Sha256::digest(data));
+
+        if computed_hash != expected_hash {
             return Err(Error::StorageWriteFailed(format!(
                 "digest mismatch: expected {}, computed {}",
                 expected_hash, computed_hash
@@ -143,10 +253,17 @@ impl BlobStore {
             fs::create_dir_all(parent).map_err(|e| Error::StorageWriteFailed(e.to_string()))?;
         }
 
-        // Write atomically via temp file
-        let temp_path = path.with_extension("tmp");
+        // SECURITY: Use unique temp file name to prevent concurrent write races
+        // If two threads write the same blob, they use different temp files,
+        // and the final rename is atomic (last writer wins, content is identical).
+        let temp_name = format!("tmp.{}", uuid::Uuid::now_v7());
+        let temp_path = path.with_extension(temp_name);
         fs::write(&temp_path, data).map_err(|e| Error::StorageWriteFailed(e.to_string()))?;
-        fs::rename(&temp_path, &path).map_err(|e| Error::StorageWriteFailed(e.to_string()))?;
+        fs::rename(&temp_path, &path).map_err(|e| {
+            // Clean up temp file on rename failure
+            let _ = fs::remove_file(&temp_path);
+            Error::StorageWriteFailed(e.to_string())
+        })?;
 
         debug!("Stored blob {} ({} bytes, verified)", digest, data.len());
         Ok(())
@@ -165,10 +282,10 @@ impl BlobStore {
     pub fn total_size(&self) -> Result<u64> {
         let mut total = 0u64;
         Self::walk_dir(&self.base_dir, &mut |path| {
-            if let Ok(meta) = fs::metadata(path) {
-                if meta.is_file() {
-                    total += meta.len();
-                }
+            if let Ok(meta) = fs::metadata(path)
+                && meta.is_file()
+            {
+                total += meta.len();
             }
         })?;
         Ok(total)
@@ -182,10 +299,10 @@ impl BlobStore {
         let sha256_dir = self.base_dir.join("sha256");
         if sha256_dir.exists() {
             Self::walk_dir(&sha256_dir, &mut |path| {
-                if path.is_file() {
-                    if let Some(hash) = path.file_name().and_then(|n| n.to_str()) {
-                        digests.push(format!("sha256:{}", hash));
-                    }
+                if path.is_file()
+                    && let Some(hash) = path.file_name().and_then(|n| n.to_str())
+                {
+                    digests.push(format!("sha256:{}", hash));
                 }
             })?;
         }
@@ -238,7 +355,9 @@ impl BlobStore {
     }
 }
 
-/// Garbage collection statistics.
+/// Statistics from a garbage collection run.
+///
+/// Returned by [`BlobStore::gc`] to report cleanup results.
 #[derive(Debug, Clone)]
 pub struct GcStats {
     /// Number of blobs removed.

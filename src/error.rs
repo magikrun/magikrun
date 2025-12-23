@@ -1,4 +1,49 @@
-//! Error types for the OCI runtime layer.
+//! # Error Types for the OCI Runtime Layer
+//!
+//! Provides structured, actionable errors for all OCI runtime operations.
+//! Each error variant includes enough context for debugging without exposing
+//! sensitive information to callers.
+//!
+//! ## Error Design Principles
+//!
+//! 1. **Specific over generic**: Each failure mode has its own variant.
+//! 2. **Context-rich**: Errors include IDs, paths, and reasons.
+//! 3. **Actionable**: Error messages suggest the likely cause.
+//! 4. **Security-conscious**: No stack traces or internal paths in messages.
+//!
+//! ## Error Categories
+//!
+//! | Category              | Variants                                | Recovery Strategy         |
+//! |-----------------------|-----------------------------------------|---------------------------|
+//! | Container Lifecycle   | `ContainerNotFound`, `CreateFailed`, ...| Retry or cleanup          |
+//! | Image/Registry        | `ImagePullFailed`, `PathTraversal`, ... | Check image ref, network  |
+//! | Bundle                | `BundleBuildFailed`, `InvalidBundle`    | Rebuild from image        |
+//! | Runtime               | `RuntimeUnavailable`, `NotSupported`    | Select different runtime  |
+//! | Platform              | `CapabilityUnavailable`, ...            | Platform requirement      |
+//! | Storage               | `BlobNotFound`, `StorageWriteFailed`    | Check disk space          |
+//! | Timeout               | `Timeout`                               | Retry with backoff        |
+//!
+//! ## Example
+//!
+//! ```rust,ignore
+//! use magikrun::{Error, Result};
+//!
+//! fn handle_error(err: Error) {
+//!     match err {
+//!         Error::ContainerNotFound(id) => {
+//!             eprintln!("Container {} does not exist", id);
+//!         }
+//!         Error::PathTraversal { path } => {
+//!             // Security: Do not log the malicious path in production
+//!             eprintln!("Blocked path traversal attempt in layer");
+//!         }
+//!         Error::Timeout { operation, duration } => {
+//!             eprintln!("{} timed out after {:?}", operation, duration);
+//!         }
+//!         _ => eprintln!("Error: {}", err),
+//!     }
+//! }
+//! ```
 
 use std::path::PathBuf;
 
@@ -18,6 +63,14 @@ pub enum Error {
     /// Container already exists.
     #[error("container already exists: {0}")]
     ContainerAlreadyExists(String),
+
+    /// Invalid container ID.
+    #[error("invalid container ID '{id}': {reason}")]
+    InvalidContainerId { id: String, reason: String },
+
+    /// Resource limit exceeded.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
 
     /// Container create failed.
     #[error("failed to create container '{id}': {reason}")]

@@ -1,25 +1,82 @@
-//! OCI Runtime trait - pure OCI Runtime Spec compliant interface.
+//! # OCI Runtime Trait - Pure OCI Runtime Spec Compliant Interface
 //!
-//! This trait defines the standard OCI container lifecycle operations:
-//! - `create`: Create a container from an OCI bundle
-//! - `start`: Start a created container
-//! - `state`: Get container state
-//! - `kill`: Send signal to container
-//! - `delete`: Remove a container
+//! This module defines the [`OciRuntime`] trait, which provides a standard
+//! interface for container lifecycle operations per the
+//! [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec).
 //!
-//! # OCI Runtime Spec Reference
+//! ## Operations
 //!
-//! See: https://github.com/opencontainers/runtime-spec/blob/main/runtime.md
+//! The OCI Runtime Spec defines five core operations:
 //!
-//! # No Pod Semantics
+//! | Operation | Input                 | Effect                              |
+//! |-----------|-----------------------|-------------------------------------|
+//! | `create`  | container ID, bundle  | Sets up container without starting  |
+//! | `start`   | container ID          | Executes the container process      |
+//! | `state`   | container ID          | Returns current container state     |
+//! | `kill`    | container ID, signal  | Sends signal to container process   |
+//! | `delete`  | container ID          | Removes container resources         |
 //!
-//! This trait intentionally excludes pod concepts (sandboxes, shared namespaces).
-//! Those are handled by the `magik-pod` crate which uses this trait for
-//! individual container operations.
+//! ## Container State Machine
+//!
+//! ```text
+//!                         create()
+//!     ┌─────────────────────────────────────────────────────────┐
+//!     │                                                         │
+//!     ▼                        start()                          │
+//!   ┌───────────┐                                ┌───────────┐         │
+//!   │  Creating  │ ───────► ┌─────────┐ ───────► │  Running  │         │
+//!   └───────────┘          │ Created │          └─────┬─────┘         │
+//!                          └────┬────┘                │               │
+//!                               │                     │ kill()        │
+//!                               │ delete()            │               │
+//!                               │ (if created)        ▼               │
+//!                               │              ┌───────────┐           │
+//!                               └────────────► │  Stopped  │ ──────────┘
+//!                                delete()    └───────────┘
+//! ```
+//!
+//! ## No Pod Semantics
+//!
+//! This trait intentionally excludes pod-level concepts:
+//! - No sandbox creation
+//! - No shared namespace configuration
+//! - No pause container management
+//!
+//! Each container is independent. Pod orchestration is handled by the
+//! `magikpod` crate, which uses this trait for individual container ops.
+//!
+//! ## Implementation Requirements
+//!
+//! Implementations MUST:
+//!
+//! 1. **Validate inputs**: Check bundle structure before `create()`
+//! 2. **Enforce state machine**: Reject operations in wrong state
+//! 3. **Handle signals correctly**: Map [`Signal`] to platform signals
+//! 4. **Clean up on delete**: Remove all container resources
+//! 5. **Report accurate state**: Never return stale [`ContainerStatus`]
+//!
+//! Implementations SHOULD:
+//!
+//! 1. Support `exec()` for debugging (optional per spec)
+//! 2. Support `wait()` for blocking until exit
+//! 3. Include container PID in state when running
+//!
+//! ## Implementations
+//!
+//! This crate provides three implementations:
+//!
+//! | Runtime          | Platform       | Isolation          | Use Case            |
+//! |------------------|----------------|--------------------|-----------------    |
+//! | [`YoukiRuntime`] | Linux only     | Namespaces+cgroups | Production containers|
+//! | [`WasmtimeRuntime`] | Cross-platform | WASM sandbox    | Portable plugins    |
+//! | [`KrunRuntime`]  | Linux/macOS    | Hardware VM        | Untrusted workloads |
+//!
+//! [`YoukiRuntime`]: crate::runtimes::YoukiRuntime
+//! [`WasmtimeRuntime`]: crate::runtimes::WasmtimeRuntime
+//! [`KrunRuntime`]: crate::runtimes::KrunRuntime
 
 use crate::error::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,7 +87,27 @@ use std::path::Path;
 
 /// OCI Runtime Spec container status.
 ///
-/// Ref: https://github.com/opencontainers/runtime-spec/blob/main/runtime.md#state
+/// Represents the lifecycle state of a container. Transitions are strictly
+/// controlled by runtime operations.
+///
+/// ## State Transitions
+///
+/// | Current   | Operation | Next      | Notes                          |
+/// |-----------|-----------|-----------|--------------------------------|
+/// | (none)    | create()  | Creating  | Transient during setup         |
+/// | Creating  | (finish)  | Created   | Automatic on success           |
+/// | Created   | start()   | Running   | Executes container process     |
+/// | Created   | delete()  | (deleted) | Remove without running         |
+/// | Running   | kill()    | Stopped   | Process terminated             |
+/// | Running   | (exit)    | Stopped   | Natural process exit           |
+/// | Stopped   | delete()  | (deleted) | Final cleanup                  |
+///
+/// ## Serialization
+///
+/// Serializes to lowercase strings per OCI spec: `creating`, `created`,
+/// `running`, `stopped`.
+///
+/// Ref: <https://github.com/opencontainers/runtime-spec/blob/main/runtime.md#state>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerStatus {
@@ -57,7 +134,27 @@ impl std::fmt::Display for ContainerStatus {
 
 /// OCI Runtime Spec container state.
 ///
-/// Ref: https://github.com/opencontainers/runtime-spec/blob/main/runtime.md#state
+/// Returned by the `state()` operation. Contains all information needed
+/// to identify and interact with a container.
+///
+/// ## Fields
+///
+/// | Field        | Required | Description                              |
+/// |--------------|----------|------------------------------------------|
+/// | `oci_version`| Yes      | OCI Runtime Spec version (e.g., "1.0.2") |
+/// | `id`         | Yes      | Container identifier                     |
+/// | `status`     | Yes      | Current lifecycle status                 |
+/// | `pid`        | No       | Host PID of container init process       |
+/// | `bundle`     | Yes      | Absolute path to OCI bundle              |
+/// | `annotations`| Yes      | Arbitrary key-value metadata             |
+///
+/// ## PID Field
+///
+/// The `pid` field is only present when `status` is `Running`. It refers
+/// to the container's init process PID on the host. For VMs and WASM,
+/// this may be `None` even when running.
+///
+/// Ref: <https://github.com/opencontainers/runtime-spec/blob/main/runtime.md#state>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerState {
@@ -100,7 +197,21 @@ impl ContainerState {
 // Signals
 // =============================================================================
 
-/// Signal to send to a container.
+/// Signal to send to a container process.
+///
+/// Represents standard POSIX signals that can be delivered to container
+/// processes. Not all signals are meaningful for all runtimes:
+///
+/// | Runtime   | Signal Support                              |
+/// |-----------|---------------------------------------------|
+/// | YoukiRuntime | Full POSIX signal semantics               |
+/// | WasmtimeRuntime | Kill only (marks as stopped)           |
+/// | KrunRuntime | Kill only (frees VM context)              |
+///
+/// ## Signal Numbers
+///
+/// Signal numbers are platform-specific. Use [`Signal::as_i32`] to get
+/// the correct value for the current platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     /// SIGTERM (graceful shutdown).
@@ -142,19 +253,23 @@ impl Signal {
             Self::Usr2 => 12,
         }
     }
+}
+
+impl std::str::FromStr for Signal {
+    type Err = ();
 
     /// Parses from signal name (e.g., "SIGTERM", "TERM", "15").
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let s = s.to_uppercase();
         let s = s.strip_prefix("SIG").unwrap_or(&s);
         match s {
-            "TERM" | "15" => Some(Self::Term),
-            "KILL" | "9" => Some(Self::Kill),
-            "HUP" | "1" => Some(Self::Hup),
-            "INT" | "2" => Some(Self::Int),
-            "USR1" | "10" => Some(Self::Usr1),
-            "USR2" | "12" => Some(Self::Usr2),
-            _ => None,
+            "TERM" | "15" => Ok(Self::Term),
+            "KILL" | "9" => Ok(Self::Kill),
+            "HUP" | "1" => Ok(Self::Hup),
+            "INT" | "2" => Ok(Self::Int),
+            "USR1" | "10" => Ok(Self::Usr1),
+            "USR2" | "12" => Ok(Self::Usr2),
+            _ => Err(()),
         }
     }
 }
@@ -177,6 +292,33 @@ impl std::fmt::Display for Signal {
 // =============================================================================
 
 /// Options for executing a command in a running container.
+///
+/// Used with the optional [`OciRuntime::exec`] operation to run additional
+/// processes inside an existing container.
+///
+/// ## Support Matrix
+///
+/// | Runtime   | exec() support | TTY support |
+/// |-----------|----------------|-------------|
+/// | YoukiRuntime | Yes         | Yes         |
+/// | WasmtimeRuntime | No       | N/A         |
+/// | KrunRuntime | No           | N/A         |
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let opts = ExecOptions {
+///     stdout: true,
+///     stderr: true,
+///     env: vec![("DEBUG".to_string(), "1".to_string())],
+///     ..Default::default()
+/// };
+///
+/// let result = runtime.exec("container-id", &["ls", "-la"], opts).await?;
+/// println!("Exit code: {}", result.exit_code);
+/// ```
+///
+/// [`OciRuntime::exec`]: crate::runtime::OciRuntime::exec
 #[derive(Debug, Clone, Default)]
 pub struct ExecOptions {
     /// Attach to stdin.
@@ -197,7 +339,20 @@ pub struct ExecOptions {
     pub group: Option<String>,
 }
 
-/// Result of command execution.
+/// Result of command execution in a container.
+///
+/// Contains the exit code and captured output streams from an `exec()`
+/// operation.
+///
+/// ## Exit Codes
+///
+/// | Code | Meaning                      |
+/// |------|------------------------------|
+/// | 0    | Success                      |
+/// | 1-125| Application error            |
+/// | 126  | Command not executable       |
+/// | 127  | Command not found            |
+/// | 128+N| Killed by signal N           |
 #[derive(Debug, Clone)]
 pub struct ExecResult {
     /// Exit code of the command.
@@ -380,12 +535,12 @@ mod tests {
 
     #[test]
     fn test_signal_parsing() {
-        assert_eq!(Signal::from_str("SIGTERM"), Some(Signal::Term));
-        assert_eq!(Signal::from_str("TERM"), Some(Signal::Term));
-        assert_eq!(Signal::from_str("15"), Some(Signal::Term));
-        assert_eq!(Signal::from_str("sigkill"), Some(Signal::Kill));
-        assert_eq!(Signal::from_str("9"), Some(Signal::Kill));
-        assert_eq!(Signal::from_str("INVALID"), None);
+        assert_eq!("SIGTERM".parse::<Signal>(), Ok(Signal::Term));
+        assert_eq!("TERM".parse::<Signal>(), Ok(Signal::Term));
+        assert_eq!("15".parse::<Signal>(), Ok(Signal::Term));
+        assert_eq!("sigkill".parse::<Signal>(), Ok(Signal::Kill));
+        assert_eq!("9".parse::<Signal>(), Ok(Signal::Kill));
+        assert!("INVALID".parse::<Signal>().is_err());
     }
 
     #[test]
