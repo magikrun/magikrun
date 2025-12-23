@@ -144,6 +144,15 @@ mod platform {
         }
 
         fn check_availability() -> (bool, Option<String>) {
+            // On Linux, KVM is required for libkrun
+            #[cfg(target_os = "linux")]
+            {
+                use std::path::Path;
+                if !Path::new("/dev/kvm").exists() {
+                    return (false, Some("KVM not available: /dev/kvm does not exist".to_string()));
+                }
+            }
+
             // SAFETY: krun_create_ctx is safe to call
             unsafe {
                 let ctx = krun_sys::krun_create_ctx();
