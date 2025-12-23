@@ -840,10 +840,10 @@ impl OciRuntime for WindowsRuntime {
 
         if !output.status.success() {
             // Revert status on failure
-            if let Ok(mut containers) = self.containers.write() {
-                if let Some(container) = containers.get_mut(id) {
-                    container.status = ContainerStatus::Created;
-                }
+            if let Ok(mut containers) = self.containers.write()
+                && let Some(container) = containers.get_mut(id)
+            {
+                container.status = ContainerStatus::Created;
             }
 
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -854,10 +854,10 @@ impl OciRuntime for WindowsRuntime {
         }
 
         // Update status to stopped (process completed)
-        if let Ok(mut containers) = self.containers.write() {
-            if let Some(container) = containers.get_mut(id) {
-                container.status = ContainerStatus::Stopped;
-            }
+        if let Ok(mut containers) = self.containers.write()
+            && let Some(container) = containers.get_mut(id)
+        {
+            container.status = ContainerStatus::Stopped;
         }
 
         info!("WSL2 MicroVM container {} completed", id);
@@ -888,10 +888,10 @@ impl OciRuntime for WindowsRuntime {
             ContainerStatus::Running
         } else if local_status == ContainerStatus::Running {
             // Was running but now stopped
-            if let Ok(mut containers) = self.containers.write() {
-                if let Some(container) = containers.get_mut(id) {
-                    container.status = ContainerStatus::Stopped;
-                }
+            if let Ok(mut containers) = self.containers.write()
+                && let Some(container) = containers.get_mut(id)
+            {
+                container.status = ContainerStatus::Stopped;
             }
             ContainerStatus::Stopped
         } else {
@@ -928,11 +928,11 @@ impl OciRuntime for WindowsRuntime {
         self.terminate_distro(&distro_name).await?;
 
         // Update status
-        if let Ok(mut containers) = self.containers.write() {
-            if let Some(container) = containers.get_mut(id) {
-                container.status = ContainerStatus::Stopped;
-                container.pid = None;
-            }
+        if let Ok(mut containers) = self.containers.write()
+            && let Some(container) = containers.get_mut(id)
+        {
+            container.status = ContainerStatus::Stopped;
+            container.pid = None;
         }
 
         info!("Terminated WSL2 MicroVM container {}", id);
@@ -1066,10 +1066,10 @@ impl OciRuntime for WindowsRuntime {
 
             if !self.is_distro_running(&distro_name).await {
                 // Update status
-                if let Ok(mut containers) = self.containers.write() {
-                    if let Some(container) = containers.get_mut(id) {
-                        container.status = ContainerStatus::Stopped;
-                    }
+                if let Ok(mut containers) = self.containers.write()
+                    && let Some(container) = containers.get_mut(id)
+                {
+                    container.status = ContainerStatus::Stopped;
                 }
                 return Ok(0);
             }
