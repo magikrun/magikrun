@@ -43,6 +43,8 @@ jobs:
             make \
             gcc \
             git \
+            llvm-dev \
+            libclang-dev \
             crun \
             fuse-overlayfs
 

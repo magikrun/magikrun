@@ -2,9 +2,9 @@
 name = "magikrun"
 version = "0.1.0"
 edition = "2024"
-description = "OCI-compliant container runtime abstraction"
+description = "OCI-compliant container runtime abstraction layer with pluggable backends (youki, wasmtime, libkrun)"
 license = "Apache-2.0"
-repository = "https://github.com/magikrun/magikpod"
+repository = "https://github.com/magikrun/magikrun"
 keywords = ["oci", "containers", "runtime"]
 categories = ["virtualization"]
 

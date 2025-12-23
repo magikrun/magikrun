@@ -36,7 +36,10 @@ jobs:
             pkgconf \
             make \
             gcc \
-            git
+            git \
+            llvm-dev \
+            libclang-dev \
+            clang
 
       - name: Cache libkrun build
         id: cache-libkrun
@@ -100,7 +103,10 @@ jobs:
             pkgconf \
             make \
             gcc \
-            git
+            git \
+            llvm-dev \
+            libclang-dev \
+            clang
 
       - name: Cache libkrun build
         id: cache-libkrun
