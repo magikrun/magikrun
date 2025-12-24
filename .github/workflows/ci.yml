@@ -538,12 +538,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
+      - name: Find LLVM lib path (Linux)
+        if: runner.os == 'Linux'
+        id: llvm
+        run: |
+          LLVM_LIB_PATH=$(llvm-config --libdir)
+          echo "libdir=$LLVM_LIB_PATH" >> $GITHUB_OUTPUT
+          echo "LLVM lib path: $LLVM_LIB_PATH"
+
       - name: Build (release)
         run: cargo build --release
         env:
           PKG_CONFIG_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig' || '/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig' }}
           LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib' || '' }}
-          LIBCLANG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/llvm/lib' || '' }}
+          LIBCLANG_PATH: ${{ runner.os == 'Linux' && steps.llvm.outputs.libdir || '/opt/homebrew/opt/llvm/lib' }}
           LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
           DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
 
