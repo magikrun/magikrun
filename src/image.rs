@@ -104,19 +104,30 @@ pub use crate::registry::LayerInfo;
 
 // Security constants for image handling (public API for consumers to reference)
 pub use crate::constants::{
+    // Storage paths (for custom storage configuration)
+    BLOB_STORE_DIR,
+    BUNDLE_DIR,
     // Size and count limits
-    IMAGE_PULL_TIMEOUT, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS, MAX_ROOTFS_SIZE,
+    IMAGE_PULL_TIMEOUT,
     // Validation
     IMAGE_REF_VALID_CHARS,
+    MAX_IMAGE_REF_LEN,
+    MAX_LAYER_SIZE,
+    MAX_LAYERS,
+    MAX_ROOTFS_SIZE,
+    // OCI media types (for registry interaction)
+    OCI_IMAGE_CONFIG_MEDIA_TYPE,
+    OCI_IMAGE_INDEX_MEDIA_TYPE,
+    OCI_IMAGE_MANIFEST_MEDIA_TYPE,
     // OCI spec version
     OCI_IMAGE_SPEC_VERSION,
-    // OCI media types (for registry interaction)
-    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_INDEX_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OCI_LAYER_MEDIA_TYPE_GZIP, OCI_LAYER_MEDIA_TYPE_TAR, OCI_LAYER_MEDIA_TYPE_ZSTD,
+    OCI_LAYER_MEDIA_TYPE_GZIP,
+    OCI_LAYER_MEDIA_TYPE_TAR,
+    OCI_LAYER_MEDIA_TYPE_ZSTD,
     // WASM media types
-    WASM_CONFIG_MEDIA_TYPE, WASM_LAYER_MEDIA_TYPE, WASM_VARIANT_ANNOTATION,
-    // Storage paths (for custom storage configuration)
-    BLOB_STORE_DIR, BUNDLE_DIR,
+    WASM_CONFIG_MEDIA_TYPE,
+    WASM_LAYER_MEDIA_TYPE,
+    WASM_VARIANT_ANNOTATION,
 };
 
 /// Image metadata for listing.
@@ -284,8 +295,10 @@ mod tests {
         let service = ImageService::new().unwrap();
         assert!(service.validate_image_ref("nginx:1.25").is_ok());
         assert!(service.validate_image_ref("ghcr.io/foo/bar:latest").is_ok());
-        assert!(service
-            .validate_image_ref("registry.example.com:5000/image@sha256:abc123")
-            .is_ok());
+        assert!(
+            service
+                .validate_image_ref("registry.example.com:5000/image@sha256:abc123")
+                .is_ok()
+        );
     }
 }

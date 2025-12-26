@@ -94,20 +94,33 @@ pub use crate::runtimes::{
 
 // Security constants for runtime configuration (public API for consumers)
 pub use crate::constants::{
+    // Container ID validation
+    CONTAINER_NAME_VALID_CHARS,
     // Timeouts
-    CONTAINER_START_TIMEOUT, DEFAULT_GRACE_PERIOD, EXEC_TIMEOUT,
+    CONTAINER_START_TIMEOUT,
+    // Storage paths
+    CONTAINER_STATE_DIR,
     // Container resource limits
-    DEFAULT_CPU_SHARES, DEFAULT_MEMORY_BYTES, MAX_CONTAINERS, MAX_MEMORY_BYTES, MAX_PIDS,
+    DEFAULT_CPU_SHARES,
+    DEFAULT_GRACE_PERIOD,
+    DEFAULT_MEMORY_BYTES,
     // MicroVM limits
-    DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_VCPUS, MAX_VM_MEMORY_MIB,
+    DEFAULT_VCPUS,
+    DEFAULT_VM_MEMORY_MIB,
     // WASM limits
-    DEFAULT_WASM_FUEL, MAX_WASM_MODULE_SIZE, MAX_WASM_MEMORY_PAGES,
+    DEFAULT_WASM_FUEL,
+    EXEC_TIMEOUT,
+    MAX_CONTAINER_ID_LEN,
+    MAX_CONTAINERS,
+    MAX_MEMORY_BYTES,
+    MAX_PIDS,
+    MAX_VCPUS,
+    MAX_VM_MEMORY_MIB,
+    MAX_WASM_MEMORY_PAGES,
+    MAX_WASM_MODULE_SIZE,
     // OCI spec version
     OCI_RUNTIME_SPEC_VERSION,
-    // Container ID validation
-    CONTAINER_NAME_VALID_CHARS, MAX_CONTAINER_ID_LEN,
-    // Storage paths
-    CONTAINER_STATE_DIR, VM_STATE_DIR,
+    VM_STATE_DIR,
     // Validation helper
     validate_container_id,
 };

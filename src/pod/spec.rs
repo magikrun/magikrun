@@ -212,16 +212,14 @@ impl PodSpec {
             .collect::<Result<Vec<_>>>()?;
 
         if containers.is_empty() {
-            return Err(Error::InvalidInput("at least one container required".to_string()));
+            return Err(Error::InvalidInput(
+                "at least one container required".to_string(),
+            ));
         }
 
-        let init_containers = parse_container_list(
-            spec.and_then(|s| s.get("initContainers")),
-        )?;
+        let init_containers = parse_container_list(spec.and_then(|s| s.get("initContainers")))?;
 
-        let volumes = parse_volume_list(
-            spec.and_then(|s| s.get("volumes")),
-        )?;
+        let volumes = parse_volume_list(spec.and_then(|s| s.get("volumes")))?;
 
         let runtime_class_name = spec
             .and_then(|s| s.get("runtimeClassName"))
@@ -584,10 +582,7 @@ impl Volume {
                 .get("path")
                 .and_then(|p| p.as_str())
                 .ok_or_else(|| {
-                    Error::InvalidInput(format!(
-                        "hostPath volume '{}' missing 'path' field",
-                        name
-                    ))
+                    Error::InvalidInput(format!("hostPath volume '{}' missing 'path' field", name))
                 })?
                 .to_string();
 
@@ -611,10 +606,7 @@ impl Volume {
                 .get("name")
                 .and_then(|n| n.as_str())
                 .ok_or_else(|| {
-                    Error::InvalidInput(format!(
-                        "configMap volume '{}' missing 'name' field",
-                        name
-                    ))
+                    Error::InvalidInput(format!("configMap volume '{}' missing 'name' field", name))
                 })?
                 .to_string();
             VolumeSource::ConfigMap { name: cm_name }

@@ -84,7 +84,7 @@ mod linux {
     use std::process::ExitCode;
     use std::time::Duration;
 
-    use tracing::{debug, error, info, warn, Level};
+    use tracing::{Level, debug, error, info, warn};
     use tracing_subscriber::FmtSubscriber;
 
     // =========================================================================
@@ -152,7 +152,10 @@ mod linux {
 
         // Verify we're PID 1
         if std::process::id() != 1 {
-            warn!(pid = std::process::id(), "vminit is not PID 1, zombie reaping may not work");
+            warn!(
+                pid = std::process::id(),
+                "vminit is not PID 1, zombie reaping may not work"
+            );
         }
 
         // Spawn containers from baked spec
@@ -246,9 +249,9 @@ mod linux {
             .build()?;
 
         // Start returns the init PID
-        let pid = container.pid().ok_or_else(|| {
-            anyhow::anyhow!("container started but no PID")
-        })?;
+        let pid = container
+            .pid()
+            .ok_or_else(|| anyhow::anyhow!("container started but no PID"))?;
 
         Ok(pid.as_raw() as u32)
     }
@@ -259,7 +262,7 @@ mod linux {
 
     /// Main init loop - zombie reaping, signal handling, TSI server.
     async fn run_init_loop(containers: Vec<ContainerProcess>) -> anyhow::Result<u8> {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         // Set up signal handlers
         let mut sigterm = signal(SignalKind::terminate())?;
@@ -267,10 +270,8 @@ mod linux {
         let mut sigchld = signal(SignalKind::child())?;
 
         // Track container PIDs
-        let mut container_pids: HashMap<u32, String> = containers
-            .iter()
-            .map(|c| (c.pid, c.name.clone()))
-            .collect();
+        let mut container_pids: HashMap<u32, String> =
+            containers.iter().map(|c| (c.pid, c.name.clone())).collect();
 
         // Get infra container PID (for determining when to exit)
         let infra_pid = containers

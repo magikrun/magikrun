@@ -4,15 +4,26 @@
 //! per OCI Image Format Specification.
 
 use magikrun::image::{
-    BlobStore, ImageInfo, ImageService,
-    Platform,
+    BlobStore,
     // Constants
-    IMAGE_REF_VALID_CHARS, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS,
+    IMAGE_REF_VALID_CHARS,
+    ImageInfo,
+    ImageService,
+    MAX_IMAGE_REF_LEN,
+    MAX_LAYER_SIZE,
+    MAX_LAYERS,
     // OCI media types
-    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_INDEX_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OCI_LAYER_MEDIA_TYPE_GZIP, OCI_LAYER_MEDIA_TYPE_TAR, OCI_LAYER_MEDIA_TYPE_ZSTD,
+    OCI_IMAGE_CONFIG_MEDIA_TYPE,
+    OCI_IMAGE_INDEX_MEDIA_TYPE,
+    OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OCI_LAYER_MEDIA_TYPE_GZIP,
+    OCI_LAYER_MEDIA_TYPE_TAR,
+    OCI_LAYER_MEDIA_TYPE_ZSTD,
+    Platform,
     // WASM media types
-    WASM_CONFIG_MEDIA_TYPE, WASM_LAYER_MEDIA_TYPE, WASM_VARIANT_ANNOTATION,
+    WASM_CONFIG_MEDIA_TYPE,
+    WASM_LAYER_MEDIA_TYPE,
+    WASM_VARIANT_ANNOTATION,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -130,7 +141,10 @@ fn test_image_ref_valid_with_digest() {
 fn test_image_ref_empty_rejected() {
     // Empty reference should be invalid
     let empty_ref = "";
-    assert!(empty_ref.is_empty(), "empty reference should fail validation");
+    assert!(
+        empty_ref.is_empty(),
+        "empty reference should fail validation"
+    );
 }
 
 #[test]
@@ -147,17 +161,17 @@ fn test_image_ref_too_long_rejected() {
 fn test_image_ref_invalid_characters() {
     // Characters outside the allowlist should be rejected
     let invalid_refs = [
-        "nginx:latest!",       // exclamation
-        "image name:tag",      // space
-        "image\nname:tag",     // newline
-        "image\tname:tag",     // tab
-        "image;name:tag",      // semicolon
-        "image|name:tag",      // pipe
-        "image&name:tag",      // ampersand
-        "image$(cmd):tag",     // command substitution
-        "image`cmd`:tag",      // backtick
-        "image'name':tag",     // single quote
-        "image\"name\":tag",   // double quote
+        "nginx:latest!",     // exclamation
+        "image name:tag",    // space
+        "image\nname:tag",   // newline
+        "image\tname:tag",   // tab
+        "image;name:tag",    // semicolon
+        "image|name:tag",    // pipe
+        "image&name:tag",    // ampersand
+        "image$(cmd):tag",   // command substitution
+        "image`cmd`:tag",    // backtick
+        "image'name':tag",   // single quote
+        "image\"name\":tag", // double quote
     ];
 
     for ref_str in invalid_refs {
@@ -178,8 +192,13 @@ fn test_path_traversal_in_image_ref() {
     let traversal_ref = "../../../etc/passwd";
 
     // All characters are technically valid
-    let all_valid = traversal_ref.chars().all(|c| IMAGE_REF_VALID_CHARS.contains(c));
-    assert!(all_valid, "traversal uses valid chars but should fail parsing");
+    let all_valid = traversal_ref
+        .chars()
+        .all(|c| IMAGE_REF_VALID_CHARS.contains(c));
+    assert!(
+        all_valid,
+        "traversal uses valid chars but should fail parsing"
+    );
 
     // The reference parsing layer should reject this
     // (tested via ImageService.pull() which validates format)
@@ -268,7 +287,10 @@ fn test_oci_layer_media_types() {
 #[test]
 fn test_wasm_media_types() {
     // Verify WASM-specific media types
-    assert_eq!(WASM_CONFIG_MEDIA_TYPE, "application/vnd.wasm.config.v1+json");
+    assert_eq!(
+        WASM_CONFIG_MEDIA_TYPE,
+        "application/vnd.wasm.config.v1+json"
+    );
     assert_eq!(
         WASM_LAYER_MEDIA_TYPE,
         "application/vnd.wasm.content.layer.v1+wasm"
@@ -284,7 +306,10 @@ fn test_wasm_media_types() {
 fn test_max_image_ref_len() {
     // 512 bytes is reasonable for image references
     assert_eq!(MAX_IMAGE_REF_LEN, 512);
-    assert!(MAX_IMAGE_REF_LEN > 100, "limit should allow reasonable refs");
+    assert!(
+        MAX_IMAGE_REF_LEN > 100,
+        "limit should allow reasonable refs"
+    );
     assert!(MAX_IMAGE_REF_LEN < 4096, "limit should prevent abuse");
 }
 
@@ -387,8 +412,8 @@ fn test_exists_nonexistent_image() {
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage);
 
-    let exists = service
-        .exists("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+    let exists =
+        service.exists("sha256:0000000000000000000000000000000000000000000000000000000000000000");
     assert!(!exists, "nonexistent image should not exist");
 }
 
@@ -404,8 +429,8 @@ fn test_remove_nonexistent_image() {
 
     // Removing nonexistent image should not panic
     // (may succeed or return error depending on implementation)
-    let _ = service
-        .remove("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+    let _ =
+        service.remove("sha256:0000000000000000000000000000000000000000000000000000000000000000");
 }
 // =============================================================================
 // ImageService Validation Behavior Tests
@@ -419,7 +444,7 @@ async fn test_pull_empty_reference_fails() {
 
     let result = service.pull("").await;
     assert!(result.is_err(), "empty reference should fail");
-    
+
     let err = result.unwrap_err();
     let err_msg = format!("{}", err);
     assert!(
@@ -438,7 +463,7 @@ async fn test_pull_too_long_reference_fails() {
     let long_ref = "a".repeat(MAX_IMAGE_REF_LEN + 1);
     let result = service.pull(&long_ref).await;
     assert!(result.is_err(), "too long reference should fail");
-    
+
     let err = result.unwrap_err();
     let err_msg = format!("{}", err);
     assert!(
@@ -466,7 +491,9 @@ async fn test_pull_nonexistent_registry_fails() {
     let service = ImageService::with_storage(storage);
 
     // This should fail because the registry doesn't exist
-    let result = service.pull("nonexistent.invalid.registry.test/image:tag").await;
+    let result = service
+        .pull("nonexistent.invalid.registry.test/image:tag")
+        .await;
     assert!(result.is_err(), "nonexistent registry should fail");
 }
 
@@ -477,7 +504,7 @@ async fn test_pull_nonexistent_registry_fails() {
 #[test]
 fn test_image_service_shares_storage_correctly() {
     use sha2::{Digest, Sha256};
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage.clone());
@@ -489,13 +516,16 @@ fn test_image_service_shares_storage_correctly() {
     storage.put_blob(&digest, data).unwrap();
 
     // Service should see it via exists()
-    assert!(service.exists(&digest), "service should see blob in shared storage");
+    assert!(
+        service.exists(&digest),
+        "service should see blob in shared storage"
+    );
 }
 
 #[test]
 fn test_image_service_list_after_storage_add() {
     use sha2::{Digest, Sha256};
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage.clone());
@@ -519,7 +549,7 @@ fn test_image_service_list_after_storage_add() {
 #[test]
 fn test_image_service_remove_actually_removes() {
     use sha2::{Digest, Sha256};
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage.clone());

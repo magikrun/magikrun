@@ -447,7 +447,8 @@ mod microvm_tests {
                 command: Some(vec!["sh".to_string()]),
                 args: Some(vec![
                     "-c".to_string(),
-                    "echo 'Init: setting up pod environment' && echo 'ready' > /tmp/ready".to_string(),
+                    "echo 'Init: setting up pod environment' && echo 'ready' > /tmp/ready"
+                        .to_string(),
                 ]),
                 env: HashMap::new(),
                 volume_mounts: vec![],
@@ -464,7 +465,8 @@ mod microvm_tests {
                 args: Some(vec![
                     "-c".to_string(),
                     // Simple command that exits after brief work
-                    "echo 'App: starting main workload' && sleep 2 && echo 'App: completed'".to_string(),
+                    "echo 'App: starting main workload' && sleep 2 && echo 'App: completed'"
+                        .to_string(),
                 ]),
                 env: [
                     ("POD_NAME".to_string(), name.to_string()),
@@ -643,7 +645,10 @@ mod microvm_tests {
         println!("\n▶ Phase 10: Verifying pod removal...");
         let final_pods = runtime.list_pods().await.expect("should list pods");
         let still_exists = final_pods.iter().any(|p| p.id == handle.id);
-        assert!(!still_exists, "Pod should be removed from list after delete");
+        assert!(
+            !still_exists,
+            "Pod should be removed from list after delete"
+        );
         println!("  ✓ Pod removed from list");
 
         println!("\n═══════════════════════════════════════════════════════════════");
@@ -715,7 +720,10 @@ mod microvm_tests {
             hostname: None,
         };
 
-        println!("  Creating pod with {} containers...", spec.containers.len());
+        println!(
+            "  Creating pod with {} containers...",
+            spec.containers.len()
+        );
 
         let handle = match runtime.run_pod(&spec).await {
             Ok(h) => {
@@ -729,7 +737,10 @@ mod microvm_tests {
         };
 
         // Verify both containers are tracked
-        let status = runtime.pod_status(&handle.id).await.expect("should get status");
+        let status = runtime
+            .pod_status(&handle.id)
+            .await
+            .expect("should get status");
         println!("  Container statuses:");
         for (name, s) in &status.containers {
             println!("    - {}: {:?}", name, s);

@@ -91,13 +91,13 @@ pub mod client;
 
 // Re-export protocol types (always available)
 pub use protocol::{
-    ErrorCode, ErrorPayload, ExecRequest, LogsRequest, OkPayload, Request, Response, ResponseData,
-    MAX_COMMAND_ARGS, MAX_COMMAND_ARG_LEN, MAX_CONTAINER_NAME_LEN, MAX_TAIL_LINES,
+    ErrorCode, ErrorPayload, ExecRequest, LogsRequest, MAX_COMMAND_ARG_LEN, MAX_COMMAND_ARGS,
+    MAX_CONTAINER_NAME_LEN, MAX_TAIL_LINES, OkPayload, Request, Response, ResponseData,
 };
 
 // Re-export client types (Linux/macOS only)
 #[cfg(not(target_os = "windows"))]
-pub use client::{TsiClient, TsiError, TsiResult, DEFAULT_TIMEOUT, DEFAULT_VSOCK_PORT};
+pub use client::{DEFAULT_TIMEOUT, DEFAULT_VSOCK_PORT, TsiClient, TsiError, TsiResult};
 
 /// Vsock CID for the host (CID 2 by convention).
 ///

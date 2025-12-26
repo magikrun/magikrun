@@ -290,9 +290,7 @@ async fn test_wasmtime_kill_nonexistent_container() {
     let runtime = WasmtimeRuntime::new();
 
     // Kill on nonexistent container should fail
-    let result = runtime
-        .kill("nonexistent", Signal::Term, false)
-        .await;
+    let result = runtime.kill("nonexistent", Signal::Term, false).await;
     assert!(result.is_err());
 }
 

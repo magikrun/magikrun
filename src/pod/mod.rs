@@ -63,10 +63,10 @@
 //! runtime.delete_pod(&handle.id, false).await?;
 //! ```
 
+mod runtimes;
 mod spec;
 mod state;
 mod traits;
-mod runtimes;
 
 // TSI protocol for MicroVM communication (internal)
 #[cfg(not(target_os = "windows"))]
@@ -74,19 +74,39 @@ pub(crate) mod tsi;
 
 // Re-export public API
 pub use spec::{
-    ContainerPort, ContainerSpec, PodSpec, ResourceRequirements, Volume, VolumeMount, VolumeSource,
+    ContainerPort,
+    ContainerSpec,
     // Constants
-    DEFAULT_GRACE_PERIOD_SECS, MAX_ANNOTATIONS_PER_POD, MAX_CONTAINERS_PER_POD,
-    MAX_CONTAINER_NAME_LEN, MAX_ENV_VALUE_LEN, MAX_ENV_VARS_PER_CONTAINER, MAX_GRACE_PERIOD_SECS,
-    MAX_LABELS_PER_POD, MAX_LABEL_KEY_LEN, MAX_LABEL_VALUE_LEN, MAX_MANIFEST_SIZE, MAX_NAME_LEN,
-    MAX_NAMESPACE_LEN, MAX_POD_ID_LEN, MAX_PODS, MAX_VOLUMES_PER_POD,
+    DEFAULT_GRACE_PERIOD_SECS,
+    MAX_ANNOTATIONS_PER_POD,
+    MAX_CONTAINER_NAME_LEN,
+    MAX_CONTAINERS_PER_POD,
+    MAX_ENV_VALUE_LEN,
+    MAX_ENV_VARS_PER_CONTAINER,
+    MAX_GRACE_PERIOD_SECS,
+    MAX_LABEL_KEY_LEN,
+    MAX_LABEL_VALUE_LEN,
+    MAX_LABELS_PER_POD,
+    MAX_MANIFEST_SIZE,
+    MAX_NAME_LEN,
+    MAX_NAMESPACE_LEN,
+    MAX_POD_ID_LEN,
+    MAX_PODS,
+    MAX_VOLUMES_PER_POD,
+    PodSpec,
+    ResourceRequirements,
+    Volume,
+    VolumeMount,
+    VolumeSource,
 };
-pub use state::{ContainerId, ContainerInfo, ContainerStatus, PodHandle, PodId, PodPhase, PodStatus, PodSummary};
+pub use state::{
+    ContainerId, ContainerInfo, ContainerStatus, PodHandle, PodId, PodPhase, PodStatus, PodSummary,
+};
 pub use traits::{ExecOptions, ExecResult, LogOptions, PodRuntime, PodRuntimeRegistry};
 
 // Re-export runtime implementations
+#[cfg(not(target_os = "windows"))]
+pub use runtimes::MicroVmPodRuntime;
 #[cfg(target_os = "linux")]
 pub use runtimes::NativePodRuntime;
 pub use runtimes::WasmPodRuntime;
-#[cfg(not(target_os = "windows"))]
-pub use runtimes::MicroVmPodRuntime;

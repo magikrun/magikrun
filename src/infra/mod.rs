@@ -76,8 +76,8 @@
 mod extension;
 
 pub use extension::{
-    ExtensionError, ExtensionResult, InfraConfig, InfraContext, InfraEvent, InfraExtension,
-    Infra, InfraError, InfraResult, MAX_EXTENSIONS, MAX_EXTENSION_NAME_LEN,
+    ExtensionError, ExtensionResult, Infra, InfraConfig, InfraContext, InfraError, InfraEvent,
+    InfraExtension, InfraResult, MAX_EXTENSION_NAME_LEN, MAX_EXTENSIONS,
 };
 
 /// Infra version string.

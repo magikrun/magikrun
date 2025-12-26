@@ -130,7 +130,7 @@ pub struct BlobStore {
     /// Base directory for blob storage.
     base_dir: PathBuf,
     /// Set of digests currently being downloaded (GC-protected).
-    /// 
+    ///
     /// SECURITY: Prevents race conditions where GC removes a blob
     /// that is being written by a concurrent pull operation.
     inflight: Arc<RwLock<HashSet<String>>>,
@@ -400,11 +400,8 @@ impl BlobStore {
     /// Statistics about removed blobs and freed space.
     pub fn gc(&self, referenced: &[String]) -> Result<GcStats> {
         // Get current in-flight set (clone to release lock quickly)
-        let inflight_set: HashSet<String> = self
-            .inflight
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default();
+        let inflight_set: HashSet<String> =
+            self.inflight.read().map(|g| g.clone()).unwrap_or_default();
 
         if !inflight_set.is_empty() {
             info!(

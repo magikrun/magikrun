@@ -103,7 +103,11 @@ fn parse_args() -> Result<Command, String> {
                     _ => i += 1,
                 }
             }
-            Ok(Command::Create { id, bundle, runtime })
+            Ok(Command::Create {
+                id,
+                bundle,
+                runtime,
+            })
         }
         "start" => {
             if args.len() < 3 {
@@ -126,7 +130,10 @@ fn parse_args() -> Result<Command, String> {
                 return Err("kill requires <container-id>".to_string());
             }
             let id = args[2].clone();
-            let signal = args.get(3).cloned().unwrap_or_else(|| "SIGTERM".to_string());
+            let signal = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "SIGTERM".to_string());
             let all = args.iter().any(|a| a == "--all" || a == "-a");
             Ok(Command::Kill { id, signal, all })
         }
@@ -163,19 +170,21 @@ struct ContainerState {
 }
 
 fn state_path(id: &str) -> PathBuf {
-    PathBuf::from(DEFAULT_STATE_ROOT).join(id).join("state.json")
+    PathBuf::from(DEFAULT_STATE_ROOT)
+        .join(id)
+        .join("state.json")
 }
 
 fn load_state(id: &str) -> Result<ContainerState, String> {
     let path = state_path(id);
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("container {} not found: {}", id, e))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("container {} not found: {}", id, e))?;
     serde_json::from_str(&content).map_err(|e| format!("invalid state: {}", e))
 }
 
 fn save_state(state: &ContainerState) -> Result<(), String> {
     let dir = PathBuf::from(DEFAULT_STATE_ROOT).join(&state.id);
-    
+
     // SECURITY: Create directories with restrictive permissions (0o700) to prevent
     // other users from reading container state files which may contain sensitive info.
     #[cfg(unix)]
@@ -191,7 +200,7 @@ fn save_state(state: &ContainerState) -> Result<(), String> {
     {
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create state dir: {}", e))?;
     }
-    
+
     let path = dir.join("state.json");
     let content = serde_json::to_string_pretty(state).map_err(|e| format!("serialize: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("write state: {}", e))
@@ -305,7 +314,11 @@ fn cmd_create(id: String, bundle: PathBuf, runtime: Option<String>) -> Result<()
         id: id.clone(),
         status: "created".to_string(),
         pid: None,
-        bundle: bundle.canonicalize().unwrap_or(bundle).to_string_lossy().to_string(),
+        bundle: bundle
+            .canonicalize()
+            .unwrap_or(bundle)
+            .to_string_lossy()
+            .to_string(),
         runtime: runtime_name,
         annotations: HashMap::new(),
     };
@@ -338,7 +351,11 @@ fn cmd_start(id: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_native(id: &str, bundle: &std::path::Path, state: &mut ContainerState) -> Result<(), String> {
+fn start_native(
+    id: &str,
+    bundle: &std::path::Path,
+    state: &mut ContainerState,
+) -> Result<(), String> {
     use libcontainer::container::builder::ContainerBuilder;
     use libcontainer::syscall::syscall::SyscallType;
 
@@ -355,7 +372,9 @@ fn start_native(id: &str, bundle: &std::path::Path, state: &mut ContainerState) 
         .map_err(|e| format!("build container: {}", e))?;
 
     let mut container = container;
-    container.start().map_err(|e| format!("start failed: {}", e))?;
+    container
+        .start()
+        .map_err(|e| format!("start failed: {}", e))?;
 
     state.status = "running".to_string();
     state.pid = container.pid().map(|p| p.as_raw() as u32);
@@ -366,11 +385,19 @@ fn start_native(id: &str, bundle: &std::path::Path, state: &mut ContainerState) 
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_native(_id: &str, _bundle: &std::path::Path, _state: &mut ContainerState) -> Result<(), String> {
+fn start_native(
+    _id: &str,
+    _bundle: &std::path::Path,
+    _state: &mut ContainerState,
+) -> Result<(), String> {
     Err("native runtime only available on Linux".to_string())
 }
 
-fn start_wasm(id: &str, bundle: &std::path::Path, state: &mut ContainerState) -> Result<(), String> {
+fn start_wasm(
+    id: &str,
+    bundle: &std::path::Path,
+    state: &mut ContainerState,
+) -> Result<(), String> {
     use wasmtime::{Config, Engine, Linker, Module, Store};
     use wasmtime_wasi::WasiCtxBuilder;
     use wasmtime_wasi::p1::{self, WasiP1Ctx};
@@ -381,7 +408,9 @@ fn start_wasm(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
     } else if bundle.join("module.wasm").exists() {
         bundle.join("module.wasm")
     } else {
-        return Err("WASM module not found at rootfs/module.wasm or bundle/module.wasm".to_string());
+        return Err(
+            "WASM module not found at rootfs/module.wasm or bundle/module.wasm".to_string(),
+        );
     };
 
     // Load module
@@ -389,10 +418,9 @@ fn start_wasm(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
     config.consume_fuel(true);
     let engine = Engine::new(&config).map_err(|e| format!("engine: {}", e))?;
 
-    let module_bytes = std::fs::read(&module_path)
-        .map_err(|e| format!("read module: {}", e))?;
-    let module = Module::new(&engine, &module_bytes)
-        .map_err(|e| format!("compile module: {}", e))?;
+    let module_bytes = std::fs::read(&module_path).map_err(|e| format!("read module: {}", e))?;
+    let module =
+        Module::new(&engine, &module_bytes).map_err(|e| format!("compile module: {}", e))?;
 
     // Build WASI context
     let wasi = WasiCtxBuilder::new()
@@ -406,8 +434,7 @@ fn start_wasm(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
 
     // Create linker and add WASI
     let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
-    p1::add_to_linker_sync(&mut linker, |ctx| ctx)
-        .map_err(|e| format!("link WASI: {}", e))?;
+    p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| format!("link WASI: {}", e))?;
 
     state.status = "running".to_string();
     state.pid = Some(std::process::id());
@@ -432,7 +459,11 @@ fn start_wasm(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
 }
 
 #[cfg(not(target_os = "windows"))]
-fn start_krun(id: &str, bundle: &std::path::Path, state: &mut ContainerState) -> Result<(), String> {
+fn start_krun(
+    id: &str,
+    bundle: &std::path::Path,
+    state: &mut ContainerState,
+) -> Result<(), String> {
     use std::ffi::CString;
     use std::os::raw::c_char;
 
@@ -474,8 +505,7 @@ fn start_krun(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
 
         // Set rootfs
         let rootfs_str = rootfs.to_string_lossy();
-        let rootfs_c = CString::new(rootfs_str.as_ref())
-            .map_err(|_| "rootfs path contains NUL")?;
+        let rootfs_c = CString::new(rootfs_str.as_ref()).map_err(|_| "rootfs path contains NUL")?;
         let ret = krun_sys::krun_set_root(ctx, rootfs_c.as_ptr());
         if ret < 0 {
             krun_sys::krun_free_ctx(ctx);
@@ -511,7 +541,11 @@ fn start_krun(id: &str, bundle: &std::path::Path, state: &mut ContainerState) ->
 }
 
 #[cfg(target_os = "windows")]
-fn start_krun(_id: &str, _bundle: &std::path::Path, _state: &mut ContainerState) -> Result<(), String> {
+fn start_krun(
+    _id: &str,
+    _bundle: &std::path::Path,
+    _state: &mut ContainerState,
+) -> Result<(), String> {
     Err("krun runtime not available on Windows".to_string())
 }
 
@@ -538,7 +572,10 @@ fn cmd_kill(id: String, signal: String, _all: bool) -> Result<(), String> {
         // This mitigates PID reuse race conditions where the container exits and another
         // process reuses the PID between state read and signal delivery.
         if !verify_process_belongs_to_container(pid, &state.bundle) {
-            eprintln!("Warning: PID {} no longer belongs to container {}, skipping signal", pid, id);
+            eprintln!(
+                "Warning: PID {} no longer belongs to container {}, skipping signal",
+                pid, id
+            );
         } else {
             // SAFETY: kill() is safe to call with a valid PID after verification
             let ret = unsafe { libc::kill(pid as i32, sig) };
@@ -596,9 +633,7 @@ fn cmd_delete(id: String, force: bool) -> Result<(), String> {
     }
 
     // Force kill if running
-    if force
-        && let Some(pid) = state.pid
-    {
+    if force && let Some(pid) = state.pid {
         // SAFETY: kill() is safe with valid PID
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
@@ -622,7 +657,10 @@ fn cmd_list() -> Result<(), String> {
                 && let Some(id) = entry.file_name().to_str()
                 && let Ok(state) = load_state(id)
             {
-                println!("{}\t{}\t{}\t{}", state.id, state.status, state.runtime, state.bundle);
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    state.id, state.status, state.runtime, state.bundle
+                );
             }
         }
     }
@@ -673,7 +711,11 @@ fn main() -> ExitCode {
     match parse_args() {
         Ok(cmd) => {
             let result = match cmd {
-                Command::Create { id, bundle, runtime } => cmd_create(id, bundle, runtime),
+                Command::Create {
+                    id,
+                    bundle,
+                    runtime,
+                } => cmd_create(id, bundle, runtime),
                 Command::Start { id } => cmd_start(id),
                 Command::State { id } => cmd_state(id),
                 Command::Kill { id, signal, all } => cmd_kill(id, signal, all),

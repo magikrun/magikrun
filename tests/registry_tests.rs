@@ -4,9 +4,15 @@
 //! per OCI Distribution Specification.
 
 use magikrun::image::{
-    is_wasm_image, BlobStore, Platform,
+    BlobStore,
     // Constants
-    IMAGE_PULL_TIMEOUT, IMAGE_REF_VALID_CHARS, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS,
+    IMAGE_PULL_TIMEOUT,
+    IMAGE_REF_VALID_CHARS,
+    MAX_IMAGE_REF_LEN,
+    MAX_LAYER_SIZE,
+    MAX_LAYERS,
+    Platform,
+    is_wasm_image,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -186,11 +192,7 @@ fn test_is_wasm_image_by_reference() {
 #[test]
 fn test_is_wasm_image_standard() {
     // Standard container images (not WASM)
-    let standard_refs = [
-        "nginx:latest",
-        "alpine:3.18",
-        "ubuntu:22.04",
-    ];
+    let standard_refs = ["nginx:latest", "alpine:3.18", "ubuntu:22.04"];
 
     for r in standard_refs {
         // Standard images should not be detected as WASM
@@ -246,7 +248,7 @@ fn test_platform_for_image_resolution() {
 #[tokio::test]
 async fn test_pull_image_validates_reference_length() {
     use magikrun::image::ImageService;
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage);
@@ -264,7 +266,7 @@ async fn test_pull_image_validates_reference_length() {
 #[tokio::test]
 async fn test_pull_image_validates_reference_chars() {
     use magikrun::image::ImageService;
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage);
@@ -286,7 +288,7 @@ async fn test_pull_image_validates_reference_chars() {
 #[tokio::test]
 async fn test_pull_image_handles_network_errors() {
     use magikrun::image::ImageService;
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage);
@@ -322,7 +324,7 @@ fn test_blob_store_arc_sharing() {
 #[test]
 fn test_blob_store_layer_deduplication() {
     use sha2::{Digest, Sha256};
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
 
@@ -371,7 +373,7 @@ fn test_sha256_digest_format() {
 #[test]
 fn test_digest_content_verification() {
     use sha2::{Digest, Sha256};
-    
+
     let temp_dir = TempDir::new().unwrap();
     let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
 
@@ -379,7 +381,7 @@ fn test_digest_content_verification() {
     let content = b"verified content";
     let hash = Sha256::digest(content);
     let correct_digest = format!("sha256:{}", hex::encode(hash));
-    
+
     let result = storage.put_blob(&correct_digest, content);
     assert!(result.is_ok(), "correct digest should work");
 
@@ -396,9 +398,7 @@ fn test_digest_content_verification() {
 #[test]
 fn test_is_wasm_image_detection() {
     // Test WASM detection function
-    let wasm_refs = [
-        "ghcr.io/example/myapp.wasm:latest",
-    ];
+    let wasm_refs = ["ghcr.io/example/myapp.wasm:latest"];
 
     for r in wasm_refs {
         let result = is_wasm_image(r);
@@ -418,14 +418,14 @@ fn test_platform_oci_string_format() {
 
     // Format should be "os/arch"
     assert!(oci_platform.contains('/'), "should be os/arch format");
-    
+
     let parts: Vec<&str> = oci_platform.split('/').collect();
     assert_eq!(parts.len(), 2);
-    
+
     // OS should be one of the known values
     let valid_os = ["linux", "darwin", "windows"];
     assert!(valid_os.contains(&parts[0]), "unknown OS: {}", parts[0]);
-    
+
     // Arch should be one of the known values
     let valid_arch = ["amd64", "arm64", "arm", "386"];
     assert!(valid_arch.contains(&parts[1]), "unknown arch: {}", parts[1]);
@@ -458,28 +458,28 @@ fn test_platform_matches_build_target() {
 #[test]
 fn test_error_types_are_distinct() {
     use magikrun::runtime::Error;
-    
+
     // Create different error types
     let invalid_ref = Error::InvalidImageReference {
         reference: "bad".to_string(),
         reason: "test".to_string(),
     };
-    
+
     let pull_failed = Error::ImagePullFailed {
         reference: "image".to_string(),
         reason: "network".to_string(),
     };
-    
+
     let too_large = Error::ImageTooLarge {
         size: 1000,
         limit: 500,
     };
-    
+
     // Each should have distinct error message
     let msg1 = format!("{}", invalid_ref);
     let msg2 = format!("{}", pull_failed);
     let msg3 = format!("{}", too_large);
-    
+
     assert_ne!(msg1, msg2);
     assert_ne!(msg2, msg3);
     assert_ne!(msg1, msg3);
@@ -488,12 +488,16 @@ fn test_error_types_are_distinct() {
 #[test]
 fn test_error_contains_useful_info() {
     use magikrun::runtime::Error;
-    
+
     let err = Error::ImagePullFailed {
         reference: "docker.io/library/nginx:latest".to_string(),
         reason: "connection refused".to_string(),
     };
-    
+
     let msg = format!("{}", err);
     assert!(msg.contains("nginx"), "error should contain image name");
-    assert!(msg.contains("connection refused"), "error should contain reason");}
+    assert!(
+        msg.contains("connection refused"),
+        "error should contain reason"
+    );
+}

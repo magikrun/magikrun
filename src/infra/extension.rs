@@ -541,7 +541,8 @@ impl Infra {
         info!(signal = signal, "Shutdown requested");
 
         // Dispatch shutdown requested event
-        self.dispatch_event(InfraEvent::ShutdownRequested { signal }).await;
+        self.dispatch_event(InfraEvent::ShutdownRequested { signal })
+            .await;
         self.dispatch_event(InfraEvent::ShuttingDown).await;
 
         // Shutdown extensions in reverse order
@@ -634,7 +635,11 @@ mod tests {
             Ok(())
         }
 
-        async fn on_event(&mut self, _event: &InfraEvent, _ctx: &InfraContext) -> ExtensionResult<()> {
+        async fn on_event(
+            &mut self,
+            _event: &InfraEvent,
+            _ctx: &InfraContext,
+        ) -> ExtensionResult<()> {
             self.event_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -749,7 +754,9 @@ mod tests {
         assert_eq!(id, Some("container-123".to_string()));
 
         // Untrack container
-        infra.notify_container_stopped("app", "container-123", 0).await;
+        infra
+            .notify_container_stopped("app", "container-123", 0)
+            .await;
 
         let names = infra.context().container_names().await;
         assert!(names.is_empty());

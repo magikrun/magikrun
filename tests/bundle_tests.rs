@@ -10,9 +10,13 @@
 //! - Whiteout handling
 
 use magikrun::image::{
-    Bundle, BundleBuilder, BundleFormat, OciContainerConfig,
+    Bundle,
+    BundleBuilder,
+    BundleFormat,
     // Constants
-    MAX_LAYER_SIZE, MAX_ROOTFS_SIZE,
+    MAX_LAYER_SIZE,
+    MAX_ROOTFS_SIZE,
+    OciContainerConfig,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,10 +37,7 @@ fn test_bundle_builder_creation() {
 fn test_bundle_builder_with_custom_path() {
     let temp_dir = TempDir::new().unwrap();
     let builder = BundleBuilder::with_path(temp_dir.path().join("bundles"));
-    assert!(
-        builder.is_ok(),
-        "BundleBuilder::with_path() should succeed"
-    );
+    assert!(builder.is_ok(), "BundleBuilder::with_path() should succeed");
 }
 
 #[test]
@@ -54,7 +55,11 @@ fn test_bundle_builder_with_storage() {
 #[test]
 fn test_bundle_builder_creates_directory() {
     let temp_dir = TempDir::new().unwrap();
-    let bundle_path = temp_dir.path().join("nested").join("deeply").join("bundles");
+    let bundle_path = temp_dir
+        .path()
+        .join("nested")
+        .join("deeply")
+        .join("bundles");
 
     let _builder = BundleBuilder::with_path(bundle_path.clone()).unwrap();
 
@@ -403,16 +408,17 @@ fn test_path_traversal_patterns() {
         "../../../etc/passwd",
         "foo/../../../etc/passwd",
         "foo/bar/../../../../../../etc/passwd",
-        "/etc/passwd",                   // absolute path
-        "./../../etc/passwd",            // relative with traversal
-        "foo/./../../etc/passwd",        // hidden traversal
-        "foo\x00/etc/passwd",            // null byte injection
-        "foo/../bar/../../../etc",       // nested traversal
+        "/etc/passwd",             // absolute path
+        "./../../etc/passwd",      // relative with traversal
+        "foo/./../../etc/passwd",  // hidden traversal
+        "foo\x00/etc/passwd",      // null byte injection
+        "foo/../bar/../../../etc", // nested traversal
     ];
 
     for pattern in dangerous_patterns {
         // Check pattern contains dangerous elements
-        let is_dangerous = pattern.contains("..") || pattern.starts_with('/') || pattern.contains('\0');
+        let is_dangerous =
+            pattern.contains("..") || pattern.starts_with('/') || pattern.contains('\0');
         assert!(
             is_dangerous,
             "pattern {} should be detected as dangerous",
@@ -425,9 +431,9 @@ fn test_path_traversal_patterns() {
 fn test_whiteout_file_patterns() {
     // OCI whiteout patterns
     let whiteout_patterns = [
-        ".wh.filename",     // delete filename
-        ".wh..wh..opq",     // opaque directory
-        "dir/.wh.file",     // nested whiteout
+        ".wh.filename", // delete filename
+        ".wh..wh..opq", // opaque directory
+        "dir/.wh.file", // nested whiteout
     ];
 
     for pattern in whiteout_patterns {
@@ -448,11 +454,11 @@ fn test_whiteout_file_patterns() {
 
 #[cfg(feature = "testing")]
 mod layer_extraction_tests {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use magikrun::image::BlobStore;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
 
     /// Helper: Create a gzip-compressed tar archive with specified entries.
     /// Returns (data, digest).
@@ -505,7 +511,7 @@ mod layer_extraction_tests {
 
     #[test]
     fn test_layer_extraction_valid_files() {
-        use magikrun::image::{extract_layers_to_rootfs, LayerInfo};
+        use magikrun::image::{LayerInfo, extract_layers_to_rootfs};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
@@ -528,11 +534,18 @@ mod layer_extraction_tests {
 
         // Extract should succeed
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "valid layer extraction should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "valid layer extraction should succeed: {:?}",
+            result.err()
+        );
 
         // Files should exist
         assert!(rootfs.join("bin/hello").exists(), "bin/hello should exist");
-        assert!(rootfs.join("etc/config.txt").exists(), "etc/config.txt should exist");
+        assert!(
+            rootfs.join("etc/config.txt").exists(),
+            "etc/config.txt should exist"
+        );
 
         // Content should match
         let content = std::fs::read_to_string(rootfs.join("etc/config.txt")).unwrap();
@@ -541,7 +554,7 @@ mod layer_extraction_tests {
 
     #[test]
     fn test_layer_extraction_path_traversal_rejected() {
-        use magikrun::image::{extract_layers_to_rootfs, LayerInfo};
+        use magikrun::image::{LayerInfo, extract_layers_to_rootfs};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
@@ -552,14 +565,12 @@ mod layer_extraction_tests {
         // Note: We can't use tar::Builder for this because it sanitizes paths.
         // Instead, we test that our extraction code would reject such paths.
         // The actual rejection happens in extract_layers_to_rootfs.
-        
+
         // For this test, we verify the extraction logic handles edge cases.
         // A real attack would need a maliciously crafted tar file.
-        
+
         // Create a layer that LOOKS like it might traverse but doesn't
-        let (data, digest) = create_test_layer(&[
-            ("safe/path/file.txt", b"content"),
-        ]);
+        let (data, digest) = create_test_layer(&[("safe/path/file.txt", b"content")]);
 
         storage.put_blob(&digest, &data).unwrap();
 
@@ -576,7 +587,7 @@ mod layer_extraction_tests {
 
     #[test]
     fn test_layer_extraction_whiteout_handling() {
-        use magikrun::image::{extract_layers_to_rootfs, LayerInfo};
+        use magikrun::image::{LayerInfo, extract_layers_to_rootfs};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
@@ -592,7 +603,7 @@ mod layer_extraction_tests {
 
         // Layer 2: Whiteout the file
         let (data2, digest2) = create_test_layer(&[
-            ("etc/.wh.to-be-deleted.txt", b""),  // Whiteout marker
+            ("etc/.wh.to-be-deleted.txt", b""), // Whiteout marker
         ]);
         storage.put_blob(&digest2, &data2).unwrap();
 
@@ -610,7 +621,11 @@ mod layer_extraction_tests {
         ];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "whiteout handling should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "whiteout handling should succeed: {:?}",
+            result.err()
+        );
 
         // Whiteout should have removed the file
         assert!(
@@ -626,7 +641,7 @@ mod layer_extraction_tests {
 
     #[test]
     fn test_layer_extraction_size_limit_enforced() {
-        use magikrun::image::{extract_layers_to_rootfs, LayerInfo};
+        use magikrun::image::{LayerInfo, extract_layers_to_rootfs};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
@@ -636,11 +651,11 @@ mod layer_extraction_tests {
         // Create a layer that claims to be larger than MAX_LAYER_SIZE
         // Note: We can't actually create such a large file in tests,
         // but we can verify the check exists by examining the code path.
-        
+
         // For now, test that normal-sized layers work
         let small_content = b"small content";
         let (data, digest) = create_test_layer(&[("small.txt", small_content)]);
-        
+
         storage.put_blob(&digest, &data).unwrap();
 
         let layers = vec![LayerInfo {
@@ -650,12 +665,16 @@ mod layer_extraction_tests {
         }];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "small layer should extract: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "small layer should extract: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn test_symlink_within_rootfs_allowed() {
-        use magikrun::image::{extract_layers_to_rootfs, LayerInfo};
+        use magikrun::image::{LayerInfo, extract_layers_to_rootfs};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = BlobStore::with_path(temp_dir.path().join("blobs")).unwrap();
@@ -674,11 +693,18 @@ mod layer_extraction_tests {
         }];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "safe symlink should be allowed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "safe symlink should be allowed: {:?}",
+            result.err()
+        );
 
         // Symlink should exist
         let symlink_path = rootfs.join("bin/sh");
-        assert!(symlink_path.symlink_metadata().is_ok(), "symlink should exist");
+        assert!(
+            symlink_path.symlink_metadata().is_ok(),
+            "symlink should exist"
+        );
     }
 }
 
@@ -689,13 +715,13 @@ mod layer_extraction_tests {
 #[test]
 fn test_oci_config_default_values() {
     let config = OciContainerConfig::default();
-    
+
     // Default values should be sensible
     assert!(config.name.is_empty());
     assert!(config.command.is_none());
     assert!(config.env.is_empty());
     assert!(config.working_dir.is_none());
-    assert!(config.user_id.is_none());  // Should default to root (0) when building
+    assert!(config.user_id.is_none()); // Should default to root (0) when building
     assert!(config.group_id.is_none());
 }
 
@@ -706,7 +732,11 @@ fn test_oci_config_custom_values() {
 
     let config = OciContainerConfig {
         name: "my-app".to_string(),
-        command: Some(vec!["/app/server".to_string(), "--port".to_string(), "8080".to_string()]),
+        command: Some(vec![
+            "/app/server".to_string(),
+            "--port".to_string(),
+            "8080".to_string(),
+        ]),
         env,
         working_dir: Some("/app".to_string()),
         user_id: Some(1000),

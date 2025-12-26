@@ -54,7 +54,7 @@ fn test_layers_count_reasonable() {
 }
 
 // =============================================================================
-// Overflow Safety Tests  
+// Overflow Safety Tests
 // =============================================================================
 //
 // Note: MAX_MANIFEST_SIZE and MAX_CONFIG_SIZE tests removed. These constants

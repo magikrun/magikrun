@@ -38,14 +38,14 @@
 //!
 //! There are no intermediate states visible to the caller.
 
+#[cfg(not(target_os = "windows"))]
+mod microvm;
 #[cfg(target_os = "linux")]
 mod native;
 mod wasm;
-#[cfg(not(target_os = "windows"))]
-mod microvm;
 
+#[cfg(not(target_os = "windows"))]
+pub use microvm::MicroVmPodRuntime;
 #[cfg(target_os = "linux")]
 pub use native::NativePodRuntime;
 pub use wasm::WasmPodRuntime;
-#[cfg(not(target_os = "windows"))]
-pub use microvm::MicroVmPodRuntime;

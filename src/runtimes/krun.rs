@@ -307,7 +307,7 @@ mod platform {
             // Spawn the magikrun CLI binary in a fresh process.
             // This is the standard OCI runtime pattern - the CLI process becomes the VM.
             // We call ourselves (magikrun start) which handles krun_start_enter().
-            
+
             // Find the magikrun binary - try various locations
             let magikrun_path = std::env::current_exe()
                 .ok()
@@ -330,15 +330,17 @@ mod platform {
                 })
                 .or_else(|| {
                     // Try CARGO_TARGET_DIR if set
-                    std::env::var("CARGO_TARGET_DIR").ok().map(|d| {
-                        std::path::PathBuf::from(d)
-                            .join("debug")
-                            .join("magikrun")
-                    }).filter(|p| p.exists())
+                    std::env::var("CARGO_TARGET_DIR")
+                        .ok()
+                        .map(|d| std::path::PathBuf::from(d).join("debug").join("magikrun"))
+                        .filter(|p| p.exists())
                 })
                 .or_else(|| {
                     // Try MAGIKRUN_PATH env var
-                    std::env::var("MAGIKRUN_PATH").ok().map(std::path::PathBuf::from).filter(|p| p.exists())
+                    std::env::var("MAGIKRUN_PATH")
+                        .ok()
+                        .map(std::path::PathBuf::from)
+                        .filter(|p| p.exists())
                 })
                 .or_else(|| {
                     // Fall back to PATH
@@ -350,7 +352,8 @@ mod platform {
                 })
                 .ok_or_else(|| Error::RuntimeUnavailable {
                     runtime: "krun".to_string(),
-                    reason: "magikrun binary not found. Set MAGIKRUN_PATH or install to PATH".to_string(),
+                    reason: "magikrun binary not found. Set MAGIKRUN_PATH or install to PATH"
+                        .to_string(),
                 })?;
 
             // Build command: magikrun start <id>
@@ -493,9 +496,7 @@ mod platform {
             }
 
             // Force kill the child process if still running
-            if force
-                && let Some(child_pid) = container.child_pid
-            {
+            if force && let Some(child_pid) = container.child_pid {
                 // SAFETY: kill() is safe with valid PID
                 unsafe { libc::kill(child_pid, libc::SIGKILL) };
                 // Wait for child to avoid zombie

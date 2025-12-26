@@ -38,8 +38,7 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig};
 use crate::pod::{
-    ContainerStatus, PodHandle, PodId, PodPhase, PodRuntime, PodSpec, PodStatus,
-    PodSummary,
+    ContainerStatus, PodHandle, PodId, PodPhase, PodRuntime, PodSpec, PodStatus, PodSummary,
 };
 use crate::runtime::{OciRuntime, Signal, WasmtimeRuntime};
 use async_trait::async_trait;
@@ -138,7 +137,9 @@ impl PodRuntime for WasmPodRuntime {
             }
 
             if pods.len() >= crate::pod::MAX_PODS {
-                return Err(Error::ResourceExhausted("maximum pod count reached".to_string()));
+                return Err(Error::ResourceExhausted(
+                    "maximum pod count reached".to_string(),
+                ));
             }
 
             // Reserve slot
@@ -490,11 +491,7 @@ impl PodRuntime for WasmPodRuntime {
                 .get(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
-            (
-                state.phase,
-                state.started_at,
-                state.modules.clone(),
-            )
+            (state.phase, state.started_at, state.modules.clone())
         };
 
         let mut container_statuses = HashMap::new();

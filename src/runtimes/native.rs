@@ -241,7 +241,10 @@ mod linux {
                 }
                 None => {
                     // No PID captured - container may have been created before start()
-                    debug!("No init PID for container {}: using default exit code 0", id);
+                    debug!(
+                        "No init PID for container {}: using default exit code 0",
+                        id
+                    );
                     0
                 }
             };

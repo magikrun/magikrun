@@ -36,8 +36,8 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig};
 use crate::pod::{
-    ContainerId, ContainerStatus, PodHandle, PodId, PodPhase, PodRuntime, PodSpec, PodStatus,
-    PodSummary, DEFAULT_GRACE_PERIOD_SECS,
+    ContainerId, ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase,
+    PodRuntime, PodSpec, PodStatus, PodSummary,
 };
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
@@ -168,7 +168,9 @@ impl PodRuntime for NativePodRuntime {
             }
 
             if pods.len() >= crate::pod::MAX_PODS {
-                return Err(Error::ResourceExhausted("maximum pod count reached".to_string()));
+                return Err(Error::ResourceExhausted(
+                    "maximum pod count reached".to_string(),
+                ));
             }
 
             // Reserve slot
@@ -292,7 +294,11 @@ impl PodRuntime for NativePodRuntime {
         // Create and start pause container
         // TODO: Generate proper config.json for pause container
         // For now, this requires the bundle to exist with config.json
-        if let Err(e) = self.runtime.create(&state.pause_container_id, &pause_bundle).await {
+        if let Err(e) = self
+            .runtime
+            .create(&state.pause_container_id, &pause_bundle)
+            .await
+        {
             self.cleanup_failed_pod(&state).await;
             let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
             return Err(Error::CreateFailed {
@@ -371,15 +377,20 @@ impl PodRuntime for NativePodRuntime {
                 .pods
                 .read()
                 .map_err(|_| Error::Internal("lock poisoned".to_string()))?;
-            pods.get(id).ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
+            pods.get(id)
+                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
             // Can't hold the lock across await points, so we need to get container IDs
-            let container_ids: Vec<String> = pods.get(id)
+            let container_ids: Vec<String> = pods
+                .get(id)
                 .map(|s| s.containers.values().cloned().collect())
                 .unwrap_or_default();
             container_ids
         };
 
-        let grace_secs = grace_period.as_secs().try_into().unwrap_or(DEFAULT_GRACE_PERIOD_SECS);
+        let grace_secs = grace_period
+            .as_secs()
+            .try_into()
+            .unwrap_or(DEFAULT_GRACE_PERIOD_SECS);
 
         // Stop all workload containers with grace period
         for container_id in &state {

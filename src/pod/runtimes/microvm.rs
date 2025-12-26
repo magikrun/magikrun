@@ -45,11 +45,11 @@
 
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig, Os, Platform};
-use crate::pod::{
-    ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId, PodPhase, PodRuntime, PodSpec, PodStatus,
-    PodSummary,
-};
 use crate::pod::tsi::TsiClient;
+use crate::pod::{
+    ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId, PodPhase, PodRuntime,
+    PodSpec, PodStatus, PodSummary,
+};
 use crate::runtime::{KrunRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -208,7 +208,9 @@ impl PodRuntime for MicroVmPodRuntime {
             }
 
             if pods.len() >= crate::pod::MAX_PODS {
-                return Err(Error::ResourceExhausted("maximum pod count reached".to_string()));
+                return Err(Error::ResourceExhausted(
+                    "maximum pod count reached".to_string(),
+                ));
             }
 
             // Reserve slot
@@ -591,12 +593,7 @@ impl PodRuntime for MicroVmPodRuntime {
         }
     }
 
-    async fn logs(
-        &self,
-        id: &PodId,
-        container: &str,
-        options: LogOptions,
-    ) -> Result<Vec<u8>> {
+    async fn logs(&self, id: &PodId, container: &str, options: LogOptions) -> Result<Vec<u8>> {
         // Get vsock CID from pod state
         let (vsock_cid, container_names) = {
             let pods = self
@@ -629,7 +626,10 @@ impl PodRuntime for MicroVmPodRuntime {
         // Create TSI client and request logs
         let client = TsiClient::new(cid);
 
-        match client.logs(container, options.follow, options.tail_lines).await {
+        match client
+            .logs(container, options.follow, options.tail_lines)
+            .await
+        {
             Ok(()) => {
                 // The current TSI logs() returns () - full log streaming
                 // would require a more complex API with async streams

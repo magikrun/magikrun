@@ -219,7 +219,9 @@ pub trait PodRuntime: Send + Sync {
         _command: &[String],
         _options: ExecOptions,
     ) -> Result<ExecResult> {
-        Err(Error::NotSupported("exec not supported by this runtime".to_string()))
+        Err(Error::NotSupported(
+            "exec not supported by this runtime".to_string(),
+        ))
     }
 
     /// Streams logs from a container within the pod.
@@ -243,13 +245,10 @@ pub trait PodRuntime: Send + Sync {
     /// - Pod not found
     /// - Container not found
     /// - Logs not supported by this runtime
-    async fn logs(
-        &self,
-        _id: &PodId,
-        _container: &str,
-        _options: LogOptions,
-    ) -> Result<Vec<u8>> {
-        Err(Error::NotSupported("logs not supported by this runtime".to_string()))
+    async fn logs(&self, _id: &PodId, _container: &str, _options: LogOptions) -> Result<Vec<u8>> {
+        Err(Error::NotSupported(
+            "logs not supported by this runtime".to_string(),
+        ))
     }
 }
 

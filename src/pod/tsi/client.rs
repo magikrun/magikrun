@@ -29,8 +29,8 @@
 //! ```
 
 use super::protocol::{
-    ExecRequest, LogsRequest, Request, Response, ResponseData, 
-    MAX_CONTAINER_NAME_LEN, MAX_COMMAND_ARGS, MAX_COMMAND_ARG_LEN,
+    ExecRequest, LogsRequest, MAX_COMMAND_ARG_LEN, MAX_COMMAND_ARGS, MAX_CONTAINER_NAME_LEN,
+    Request, Response, ResponseData,
 };
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -327,7 +327,9 @@ impl TsiClient {
     /// we reject invalid names early to prevent any potential parsing issues.
     fn validate_container_name(&self, name: &str) -> TsiResult<()> {
         if name.is_empty() {
-            return Err(TsiError::InvalidInput("container name cannot be empty".into()));
+            return Err(TsiError::InvalidInput(
+                "container name cannot be empty".into(),
+            ));
         }
         if name.len() > MAX_CONTAINER_NAME_LEN {
             return Err(TsiError::InvalidInput(format!(
@@ -335,15 +337,18 @@ impl TsiClient {
             )));
         }
         // SECURITY: Only allow safe characters (alphanumeric, hyphen, underscore)
-        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(TsiError::InvalidInput(
-                "container name contains invalid characters (allowed: a-z, A-Z, 0-9, -, _)".into()
+                "container name contains invalid characters (allowed: a-z, A-Z, 0-9, -, _)".into(),
             ));
         }
         // Reject names starting or ending with hyphen
         if name.starts_with('-') || name.ends_with('-') {
             return Err(TsiError::InvalidInput(
-                "container name cannot start or end with hyphen".into()
+                "container name cannot start or end with hyphen".into(),
             ));
         }
         Ok(())
@@ -358,13 +363,16 @@ impl TsiClient {
         }
         if command.len() > MAX_COMMAND_ARGS {
             return Err(TsiError::InvalidInput(format!(
-                "too many command arguments ({} > {})", command.len(), MAX_COMMAND_ARGS
+                "too many command arguments ({} > {})",
+                command.len(),
+                MAX_COMMAND_ARGS
             )));
         }
         for (i, arg) in command.iter().enumerate() {
             if arg.len() > MAX_COMMAND_ARG_LEN {
                 return Err(TsiError::InvalidInput(format!(
-                    "command argument {} exceeds {} bytes", i, MAX_COMMAND_ARG_LEN
+                    "command argument {} exceeds {} bytes",
+                    i, MAX_COMMAND_ARG_LEN
                 )));
             }
         }
