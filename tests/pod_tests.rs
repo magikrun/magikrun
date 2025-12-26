@@ -519,7 +519,7 @@ mod microvm_tests {
 
         // Phase 2: Prepare pod specification
         println!("\n▶ Phase 2: Preparing pod specification...");
-        let pod_name = format!("integ-test-{}", uuid::Uuid::new_v4().as_simple());
+        let pod_name = format!("integ-test-{}", uuid::Uuid::now_v7().as_simple());
         let spec = infra_app_pod_spec(&pod_name);
         println!("  ✓ Pod spec created:");
         println!("    - Name: {}/{}", spec.namespace, spec.name);
@@ -677,7 +677,7 @@ mod microvm_tests {
         let runtime = MicroVmPodRuntime::new().expect("should create runtime");
 
         // Create pod with multiple containers
-        let pod_name = format!("multi-{}", uuid::Uuid::new_v4().as_simple());
+        let pod_name = format!("multi-{}", uuid::Uuid::now_v7().as_simple());
         let spec = PodSpec {
             namespace: "test".to_string(),
             name: pod_name.clone(),
