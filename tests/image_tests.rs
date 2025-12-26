@@ -3,6 +3,9 @@
 //! Validates ImageService, ImageHandle, and image reference handling
 //! per OCI Image Format Specification.
 
+#![allow(clippy::assertions_on_constants)]
+#![allow(clippy::const_is_empty)]
+
 use magikrun::image::{
     BlobStore,
     // Constants

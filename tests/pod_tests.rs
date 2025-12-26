@@ -23,6 +23,8 @@
 //! codesign -s - --entitlements entitlements.plist target/debug/deps/pod_tests-*
 //! ```
 
+#![allow(clippy::assertions_on_constants)]
+
 use magikrun::pod::{
     ContainerSpec, PodPhase, PodRuntime, PodSpec, ResourceRequirements, Volume, VolumeMount,
     VolumeSource, WasmPodRuntime,

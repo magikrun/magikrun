@@ -478,19 +478,31 @@ impl PodRuntime for NativePodRuntime {
     }
 
     async fn pod_status(&self, id: &PodId) -> Result<PodStatus> {
-        let pods = self
-            .pods
-            .read()
-            .map_err(|_| Error::Internal("lock poisoned".to_string()))?;
+        // Collect data from lock, then drop it before any async operations
+        let (phase, started_at, containers_to_query) = {
+            let pods = self
+                .pods
+                .read()
+                .map_err(|_| Error::Internal("lock poisoned".to_string()))?;
 
-        let state = pods
-            .get(id)
-            .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
+            let state = pods
+                .get(id)
+                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
+
+            let containers: Vec<(String, String)> = state
+                .containers
+                .iter()
+                .map(|(name, cid)| (name.clone(), cid.clone()))
+                .collect();
+
+            (state.phase, state.started_at, containers)
+        };
+        // Lock is dropped here
 
         let mut container_statuses = HashMap::new();
 
-        for (name, container_id) in &state.containers {
-            let status = match self.runtime.state(container_id).await {
+        for (name, container_id) in containers_to_query {
+            let status = match self.runtime.state(&container_id).await {
                 Ok(cs) => match cs.status {
                     crate::runtime::ContainerStatus::Running => ContainerStatus::Running,
                     crate::runtime::ContainerStatus::Creating
@@ -504,13 +516,13 @@ impl PodRuntime for NativePodRuntime {
                 },
                 Err(_) => ContainerStatus::Unknown,
             };
-            container_statuses.insert(name.clone(), status);
+            container_statuses.insert(name, status);
         }
 
         Ok(PodStatus {
-            phase: state.phase,
+            phase,
             containers: container_statuses,
-            started_at: state.started_at,
+            started_at,
             finished_at: None,
             message: None,
         })

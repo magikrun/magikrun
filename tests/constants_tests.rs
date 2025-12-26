@@ -2,6 +2,12 @@
 //!
 //! Validates that security-critical constants have expected values and
 //! that derived limits don't overflow.
+//!
+//! Note: These tests intentionally use assertions on constants to verify
+//! compile-time invariants. The constants won't change at runtime, but
+//! these tests catch configuration errors during development.
+
+#![allow(clippy::assertions_on_constants)]
 
 // Import from the facade modules (image and runtime)
 use magikrun::image::*;

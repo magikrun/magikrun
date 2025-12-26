@@ -163,7 +163,7 @@ fn test_bundle_format_equality() {
 #[test]
 fn test_bundle_format_clone() {
     let format = BundleFormat::OciRuntime;
-    let cloned = format.clone();
+    let cloned = format;
     assert_eq!(format, cloned);
 }
 

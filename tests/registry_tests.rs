@@ -3,6 +3,8 @@
 //! Validates RegistryClient, image pulling, and registry interaction
 //! per OCI Distribution Specification.
 
+#![allow(clippy::assertions_on_constants)]
+
 use magikrun::image::{
     BlobStore,
     // Constants

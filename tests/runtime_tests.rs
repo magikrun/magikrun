@@ -31,7 +31,7 @@ fn test_container_status_equality() {
 #[test]
 fn test_container_status_clone() {
     let status = ContainerStatus::Running;
-    let cloned = status.clone();
+    let cloned = status;
     assert_eq!(status, cloned);
 }
 
@@ -197,7 +197,7 @@ fn test_signal_display() {
 #[test]
 fn test_signal_clone() {
     let signal = Signal::Term;
-    let cloned = signal.clone();
+    let cloned = signal;
     assert_eq!(format!("{}", signal), format!("{}", cloned));
 }
 
