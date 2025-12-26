@@ -471,10 +471,10 @@ mod linux {
                     .containers
                     .read()
                     .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
-                if let Some(info) = containers.get(id) {
-                    if let Some(exit_code) = info.exit_code {
-                        return Ok(exit_code);
-                    }
+                if let Some(info) = containers.get(id)
+                    && let Some(exit_code) = info.exit_code
+                {
+                    return Ok(exit_code);
                 }
             }
 

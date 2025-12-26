@@ -406,11 +406,11 @@ impl PodRuntime for NativePodRuntime {
             let all_stopped = {
                 let mut stopped = true;
                 for container_id in &state {
-                    if let Ok(container_state) = self.runtime.state(container_id).await {
-                        if container_state.status == crate::runtime::ContainerStatus::Running {
-                            stopped = false;
-                            break;
-                        }
+                    if let Ok(container_state) = self.runtime.state(container_id).await
+                        && container_state.status == crate::runtime::ContainerStatus::Running
+                    {
+                        stopped = false;
+                        break;
                     }
                 }
                 stopped
