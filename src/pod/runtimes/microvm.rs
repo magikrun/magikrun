@@ -57,8 +57,10 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
-/// Base path for MicroVM pod bundles.
-const VM_BASE_PATH: &str = "/var/run/magikrun/vm-pods";
+use crate::pod::runtime_base_path;
+
+/// Subdirectory for MicroVM pod bundles under the base path.
+const VM_PODS_SUBDIR: &str = "vm-pods";
 
 /// Poll interval when waiting for stop (milliseconds).
 const STOP_POLL_INTERVAL_MS: u64 = 100;
@@ -193,7 +195,7 @@ impl PodRuntime for MicroVmPodRuntime {
     async fn run_pod(&self, spec: &PodSpec) -> Result<PodHandle> {
         let pod_id = PodId::from_pod(&spec.namespace, &spec.name);
         let vm_id = format!("{}-vm", pod_id.as_str());
-        let pod_dir = Path::new(VM_BASE_PATH).join(&vm_id);
+        let pod_dir = runtime_base_path().join(VM_PODS_SUBDIR).join(&vm_id);
         let rootfs_path = pod_dir.join("rootfs");
 
         // Check capacity and reserve slot atomically

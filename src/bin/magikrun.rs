@@ -29,8 +29,36 @@ use std::process::ExitCode;
 // Constants
 // =============================================================================
 
-/// Default state directory for container metadata.
-const DEFAULT_STATE_ROOT: &str = "/run/magikrun";
+/// Returns the platform-appropriate state root directory.
+///
+/// - Linux: `/run/magikrun` (tmpfs, fast, ephemeral)
+/// - macOS: `~/.magikrun/run` (user-writable, survives reboot)
+/// - Windows: `%LOCALAPPDATA%\magikrun\run`
+fn default_state_root() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("/run/magikrun")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .map(|h| h.join(".magikrun").join("run"))
+            .unwrap_or_else(|| PathBuf::from(".magikrun/run"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        dirs::data_local_dir()
+            .map(|d| d.join("magikrun").join("run"))
+            .unwrap_or_else(|| PathBuf::from("magikrun\\run"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from("/run/magikrun")
+    }
+}
 
 /// OCI runtime spec version.
 const OCI_VERSION: &str = "1.0.2";
@@ -170,7 +198,7 @@ struct ContainerState {
 }
 
 fn state_path(id: &str) -> PathBuf {
-    PathBuf::from(DEFAULT_STATE_ROOT)
+    default_state_root()
         .join(id)
         .join("state.json")
 }
@@ -183,7 +211,7 @@ fn load_state(id: &str) -> Result<ContainerState, String> {
 }
 
 fn save_state(state: &ContainerState) -> Result<(), String> {
-    let dir = PathBuf::from(DEFAULT_STATE_ROOT).join(&state.id);
+    let dir = default_state_root().join(&state.id);
 
     // SECURITY: Create directories with restrictive permissions (0o700) to prevent
     // other users from reading container state files which may contain sensitive info.
@@ -207,7 +235,7 @@ fn save_state(state: &ContainerState) -> Result<(), String> {
 }
 
 fn delete_state(id: &str) -> Result<(), String> {
-    let dir = PathBuf::from(DEFAULT_STATE_ROOT).join(id);
+    let dir = default_state_root().join(id);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("delete state: {}", e))?;
     }
@@ -359,7 +387,7 @@ fn start_native(
     use libcontainer::container::builder::ContainerBuilder;
     use libcontainer::syscall::syscall::SyscallType;
 
-    let state_root = PathBuf::from(DEFAULT_STATE_ROOT);
+    let state_root = default_state_root();
 
     let container = ContainerBuilder::new(id.to_string(), SyscallType::default())
         .with_root_path(&state_root)
@@ -644,7 +672,7 @@ fn cmd_delete(id: String, force: bool) -> Result<(), String> {
 }
 
 fn cmd_list() -> Result<(), String> {
-    let state_root = PathBuf::from(DEFAULT_STATE_ROOT);
+    let state_root = default_state_root();
     if !state_root.exists() {
         println!("ID\tSTATUS\tRUNTIME\tBUNDLE");
         return Ok(());

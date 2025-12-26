@@ -43,12 +43,14 @@ use crate::pod::{
 use crate::runtime::{OciRuntime, Signal, WasmtimeRuntime};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::Duration;
 
-/// Base path for WASM pod bundles.
-const WASM_BASE_PATH: &str = "/var/run/magikrun/wasm-pods";
+use crate::pod::runtime_base_path;
+
+/// Subdirectory for WASM pod bundles under the base path.
+const WASM_PODS_SUBDIR: &str = "wasm-pods";
 
 /// WASM pod runtime using wasmtime.
 ///
@@ -123,7 +125,7 @@ impl PodRuntime for WasmPodRuntime {
 
     async fn run_pod(&self, spec: &PodSpec) -> Result<PodHandle> {
         let pod_id = PodId::from_pod(&spec.namespace, &spec.name);
-        let pod_dir = Path::new(WASM_BASE_PATH).join(pod_id.as_str());
+        let pod_dir = runtime_base_path().join(WASM_PODS_SUBDIR).join(pod_id.as_str());
 
         // Check capacity and reserve slot atomically
         {

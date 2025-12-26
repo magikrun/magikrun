@@ -72,6 +72,39 @@ mod traits;
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod tsi;
 
+use std::path::PathBuf;
+
+/// Returns the platform-appropriate base directory for pod runtime state.
+///
+/// - Linux: `/var/run/magikrun` (tmpfs, ephemeral)
+/// - macOS: `~/.magikrun/run` (user-writable)
+/// - Windows: `%LOCALAPPDATA%\magikrun\run`
+pub(crate) fn runtime_base_path() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("/var/run/magikrun")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .map(|h| h.join(".magikrun").join("run"))
+            .unwrap_or_else(|| PathBuf::from(".magikrun/run"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        dirs::data_local_dir()
+            .map(|d| d.join("magikrun").join("run"))
+            .unwrap_or_else(|| PathBuf::from("magikrun\\run"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from("/var/run/magikrun")
+    }
+}
+
 // Re-export public API
 pub use spec::{
     ContainerPort,

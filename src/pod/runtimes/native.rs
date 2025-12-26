@@ -46,8 +46,10 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-/// Base path for pod bundles.
-const BUNDLE_BASE_PATH: &str = "/var/run/magikrun/pods";
+use crate::pod::runtime_base_path;
+
+/// Subdirectory for pod bundles under the base path.
+const PODS_SUBDIR: &str = "pods";
 
 /// Poll interval when waiting for container stop (milliseconds).
 const STOP_POLL_INTERVAL_MS: u64 = 100;
@@ -156,7 +158,7 @@ impl PodRuntime for NativePodRuntime {
 
     async fn run_pod(&self, spec: &PodSpec) -> Result<PodHandle> {
         let pod_id = PodId::from_pod(&spec.namespace, &spec.name);
-        let pod_dir = Path::new(BUNDLE_BASE_PATH).join(pod_id.as_str());
+        let pod_dir = runtime_base_path().join(PODS_SUBDIR).join(pod_id.as_str());
 
         // Check capacity and reserve slot atomically
         {
