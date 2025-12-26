@@ -8,9 +8,9 @@
 //!
 //! | Format          | Contents                        | Runtime Backend     |
 //! |-----------------|--------------------------------|---------------------|
-//! | `Bundle::OciRuntime` | `rootfs/` + `config.json` | NativeRuntime       |
-//! | `Bundle::Wasm`       | `module.wasm` + WASI config | WasmtimeRuntime    |
-//! | `Bundle::MicroVm`    | `rootfs/` + command/env     | KrunRuntime        |
+//! | `Bundle::OciRuntime` | `rootfs/` + `config.json` | `NativeRuntime`       |
+//! | `Bundle::Wasm`       | `module.wasm` + WASI config | `WasmtimeRuntime`    |
+//! | `Bundle::MicroVm`    | `rootfs/` + command/env     | `KrunRuntime`        |
 //!
 //! ## Security Model
 //!
@@ -151,7 +151,7 @@ pub enum Bundle {
         /// WASI directory mappings.
         wasi_dirs: Vec<(String, String)>,
     },
-    /// MicroVM rootfs.
+    /// `MicroVM` rootfs.
     MicroVm {
         /// Path to rootfs directory.
         rootfs: PathBuf,
@@ -168,6 +168,7 @@ pub enum Bundle {
 
 impl Bundle {
     /// Returns the bundle path.
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::OciRuntime { path, .. } => path,
@@ -177,6 +178,7 @@ impl Bundle {
     }
 
     /// Returns the rootfs path if applicable.
+    #[must_use]
     pub fn rootfs(&self) -> Option<&Path> {
         match self {
             Self::OciRuntime { rootfs, .. } => Some(rootfs),

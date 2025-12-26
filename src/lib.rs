@@ -67,9 +67,9 @@
 //!
 //! | Runtime   | Isolation Level | Attack Surface | Use Case              |
 //! |-----------|-----------------|----------------|---------------------- |
-//! | KrunRuntime | Hardware VM   | Minimal (VMM)  | Untrusted workloads   |
-//! | NativeRuntime| Namespaces    | Kernel syscalls| Multi-tenant pods     |
-//! | WasmtimeRuntime | WASM sandbox | WASI only   | Portable plugins      |
+//! | `KrunRuntime` | Hardware VM   | Minimal (VMM)  | Untrusted workloads   |
+//! | `NativeRuntime`| Namespaces    | Kernel syscalls| Multi-tenant pods     |
+//! | `WasmtimeRuntime` | WASM sandbox | WASI only   | Portable plugins      |
 //!
 //! ## Key Security Properties
 //!

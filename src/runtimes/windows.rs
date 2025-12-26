@@ -1030,8 +1030,8 @@ impl OciRuntime for WindowsRuntime {
         // SECURITY: Shell-escape working directory and command arguments
         let cwd = opts.working_dir.as_deref().unwrap_or("/");
         let escaped_cwd = shell_escape(cwd);
-        let escaped_cmd: Vec<String> = command.iter().map(|s| shell_escape(s)).collect();
-        let cmd_str = escaped_cmd.join(" ");
+        let shell_escaped_args: Vec<String> = command.iter().map(|s| shell_escape(s)).collect();
+        let cmd_str = shell_escaped_args.join(" ");
         let full_cmd = format!("cd {} && {} {}", escaped_cwd, env_exports, cmd_str);
 
         let output = timeout(
