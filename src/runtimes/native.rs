@@ -622,6 +622,7 @@ mod linux {
     ///     builder.build_oci_bundle_with_namespaces(&image, &config, &ns_paths)?;
     /// }
     /// ```
+    #[allow(dead_code)] // Infrastructure for namespace sharing - used by NativePodRuntime
     pub fn get_namespace_paths(pid: u32) -> HashMap<String, PathBuf> {
         let mut paths = HashMap::new();
         let proc_ns = PathBuf::from(format!("/proc/{}/ns", pid));

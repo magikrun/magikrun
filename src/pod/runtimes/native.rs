@@ -106,6 +106,7 @@ impl NativePodRuntime {
     }
 
     /// Gets namespace paths from pause container PID.
+    #[allow(dead_code)] // Infrastructure for namespace sharing - will be used when container joining is implemented
     fn namespace_paths(pid: u32) -> NamespacePaths {
         let base = format!("/proc/{pid}/ns");
         NamespacePaths {
@@ -139,6 +140,7 @@ impl NativePodRuntime {
 }
 
 /// Namespace paths for container joining.
+#[allow(dead_code)] // Infrastructure for namespace sharing - will be used when container joining is implemented
 struct NamespacePaths {
     network: String,
     ipc: String,
