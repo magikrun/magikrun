@@ -238,4 +238,8 @@ pub struct PodSummary {
     pub runtime_class: String,
     /// Number of containers.
     pub container_count: usize,
+    /// Pod labels for filtering and organization.
+    pub labels: HashMap<String, String>,
+    /// When the pod was created.
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }

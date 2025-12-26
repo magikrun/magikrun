@@ -55,7 +55,7 @@ hex = "0.4"
 
 # Utilities
 dirs = "6"
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
@@ -81,3 +81,4 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v4"] }

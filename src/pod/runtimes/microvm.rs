@@ -524,6 +524,8 @@ impl PodRuntime for MicroVmPodRuntime {
                 phase: state.phase,
                 runtime_class: self.runtime_class().to_string(),
                 container_count: state.container_names.len(),
+                labels: state.spec.labels.clone(),
+                created_at: state.started_at,
             })
             .collect();
 

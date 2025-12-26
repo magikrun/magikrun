@@ -538,6 +538,8 @@ impl PodRuntime for WasmPodRuntime {
                 phase: state.phase,
                 runtime_class: self.runtime_class().to_string(),
                 container_count: state.modules.len(),
+                labels: state.spec.labels.clone(),
+                created_at: state.started_at,
             })
             .collect();
 
