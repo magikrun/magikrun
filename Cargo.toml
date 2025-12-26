@@ -12,11 +12,19 @@ categories = ["virtualization"]
 name = "magikrun"
 path = "src/bin/magikrun.rs"
 
+# vminit is Linux-only (runs as PID 1 inside MicroVMs)
+[[bin]]
+name = "vminit"
+path = "src/bin/vminit.rs"
+required-features = ["vminit"]
+
 [features]
 default = []
 # Exposes internal APIs for testing security properties (layer extraction, etc.)
 # SECURITY: Only enable in test builds, not production
 testing = []
+# vminit binary - Linux only, requires additional deps
+vminit = []
 
 [dependencies]
 # Core
@@ -57,6 +65,9 @@ futures = "0.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 libcontainer = { version = "0.5", default-features = false, features = ["v2"] }
 libcgroups = { version = "0.5", default-features = false, features = ["v2"] }
+# vminit dependencies (Linux only)
+anyhow = "1"
+tokio = { version = "1", features = ["signal"] }
 
 # libkrun for microVM isolation (Linux and macOS only, not Windows)
 [target.'cfg(not(target_os = "windows"))'.dependencies]
