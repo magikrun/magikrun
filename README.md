@@ -379,9 +379,3 @@ cargo test -- --nocapture
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) for details.
-
-## Related Projects
-
-- [`magikpod`](../magikpod) - Pod orchestration with K8s manifest support
-- [`magik`](../magik) - Decentralized workload orchestration (machineplane + workplane)
-- [`korium`](../korium) - P2P mesh networking (Kademlia DHT, GossipSub, QUIC/mTLS)
