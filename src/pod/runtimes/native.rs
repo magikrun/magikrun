@@ -36,8 +36,8 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig};
 use crate::pod::{
-    ContainerId, ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase,
-    PodRuntime, PodSpec, PodStatus, PodSummary,
+    ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase, PodRuntime, PodSpec,
+    PodStatus, PodSummary,
 };
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
@@ -493,7 +493,8 @@ impl PodRuntime for NativePodRuntime {
             let status = match self.runtime.state(container_id).await {
                 Ok(cs) => match cs.status {
                     crate::runtime::ContainerStatus::Running => ContainerStatus::Running,
-                    crate::runtime::ContainerStatus::Created => ContainerStatus::Waiting {
+                    crate::runtime::ContainerStatus::Creating
+                    | crate::runtime::ContainerStatus::Created => ContainerStatus::Waiting {
                         reason: "Created".to_string(),
                     },
                     crate::runtime::ContainerStatus::Stopped => ContainerStatus::Terminated {

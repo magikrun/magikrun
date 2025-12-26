@@ -740,7 +740,7 @@ mod stub {
 // =============================================================================
 
 #[cfg(target_os = "linux")]
-pub use linux::{NativeRuntime, get_namespace_paths};
+pub use linux::NativeRuntime;
 
 #[cfg(not(target_os = "linux"))]
 pub use stub::NativeRuntime;
