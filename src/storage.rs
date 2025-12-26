@@ -175,7 +175,7 @@ impl BlobStore {
     /// Marks a digest as in-flight (being downloaded).
     ///
     /// Call this BEFORE starting a blob download to protect it from GC.
-    /// Call [`untrack_inflight`] after the blob is stored.
+    /// Call [`Self::untrack_inflight`] after the blob is stored.
     ///
     /// # Example
     ///
@@ -388,7 +388,7 @@ impl BlobStore {
     /// # GC Safety
     ///
     /// This method is safe to call during concurrent image pulls as long as
-    /// callers use [`track_inflight`] / [`untrack_inflight`] around blob downloads.
+    /// callers use [`Self::track_inflight`] / [`Self::untrack_inflight`] around blob downloads.
     /// In-flight blobs are automatically protected from deletion.
     ///
     /// # Arguments

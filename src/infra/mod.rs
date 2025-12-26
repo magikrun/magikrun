@@ -35,7 +35,7 @@
 //!
 //! ## Extension Model
 //!
-//! Extensions implement [`InfraExtension`] and hook into container lifecycle:
+//! Extensions implement `InfraExtension` and hook into container lifecycle:
 //!
 //! ```rust,ignore
 //! use magikrun::infra::{Infra, InfraExtension, InfraEvent};

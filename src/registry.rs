@@ -104,7 +104,7 @@ use tracing::{debug, info};
 ///
 /// All digests (`digest`, `config_digest`, `layers[*].digest`) reference
 /// blobs in the [`BlobStore`]. The blobs are available after a successful
-/// [`pull_image`] call.
+/// image pull operation.
 ///
 /// [`BlobStore`]: crate::storage::BlobStore
 #[derive(Debug, Clone)]

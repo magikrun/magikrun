@@ -74,7 +74,7 @@
 //! ## Key Security Properties
 //!
 //! - **Path Traversal Protection**: All tar extraction validates paths against
-//!   `..` components and absolute paths (see [`bundle::extract_layers_to_rootfs`]).
+//!   `..` components and absolute paths.
 //! - **Size Limits**: Bounded constants prevent resource exhaustion:
 //!   - `MAX_LAYER_SIZE`: 512 MiB per layer
 //!   - `MAX_ROOTFS_SIZE`: 4 GiB total
@@ -164,8 +164,8 @@ pub mod image;
 /// Runtime facade - CRI RuntimeService pattern.
 ///
 /// Provides: `OciRuntime`, `ContainerState`, `ContainerStatus`, `Signal`,
-/// `NativeRuntime`, `WasmtimeRuntime`, `KrunRuntime`, `WindowsRuntime`,
-/// `RuntimeRegistry`, `Error`, `Result`
+/// `NativeRuntime`, `WasmtimeRuntime`, `KrunRuntime` (Linux/macOS),
+/// `WindowsRuntime` (Windows), `RuntimeRegistry`, `Error`, `Result`
 pub mod runtime;
 
 /// Pod Runtime Interface (PRI) - atomic pod lifecycle.

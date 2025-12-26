@@ -187,7 +187,7 @@ impl ImageService {
     /// # Errors
     ///
     /// - [`Error::InvalidImageReference`] if reference is invalid
-    /// - [`Error::RegistryError`] if pull fails
+    /// - [`Error::ImagePullFailed`] if pull fails
     /// - [`Error::Timeout`] if pull exceeds [`IMAGE_PULL_TIMEOUT`]
     ///
     /// [`IMAGE_PULL_TIMEOUT`]: crate::constants::IMAGE_PULL_TIMEOUT

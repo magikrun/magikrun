@@ -54,9 +54,9 @@
 //!
 //! 1. **Validate inputs**: Check bundle structure before `create()`
 //! 2. **Enforce state machine**: Reject operations in wrong state
-//! 3. **Handle signals correctly**: Map [`Signal`] to platform signals
+//! 3. **Handle signals correctly**: Map `Signal` to platform signals
 //! 4. **Clean up on delete**: Remove all container resources
-//! 5. **Report accurate state**: Never return stale [`ContainerStatus`]
+//! 5. **Report accurate state**: Never return stale `ContainerStatus`
 //!
 //! Implementations SHOULD:
 //!
@@ -70,10 +70,10 @@
 //!
 //! | Runtime            | Platform       | Isolation          | Use Case            |
 //! |--------------------|----------------|--------------------|---------------------|
-//! | [`NativeRuntime`]  | Linux only     | Namespaces+cgroups | Production containers|
-//! | [`WasmtimeRuntime`]| Cross-platform | WASM sandbox       | Portable plugins    |
-//! | [`KrunRuntime`]    | Linux/macOS    | Hardware VM        | Untrusted workloads |
-//! | [`WindowsRuntime`] | Windows only   | WSL2 MicroVM       | Linux on Windows    |
+//! | `NativeRuntime`    | Linux only     | Namespaces+cgroups | Production containers|
+//! | `WasmtimeRuntime`  | Cross-platform | WASM sandbox       | Portable plugins    |
+//! | `KrunRuntime`      | Linux/macOS    | Hardware VM        | Untrusted workloads |
+//! | `WindowsRuntime`   | Windows only   | WSL2 MicroVM       | Linux on Windows    |
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
