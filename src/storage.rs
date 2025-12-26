@@ -95,8 +95,10 @@
 use crate::constants::BLOB_STORE_DIR;
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
 /// Content-addressed blob store for OCI layers.
@@ -106,12 +108,19 @@ use tracing::{debug, info, warn};
 /// - Atomic write operations (crash-safe)
 /// - Path traversal protection in digest handling
 /// - Sharded directory structure for scalability
+/// - GC-safe in-flight blob tracking
 ///
 /// ## Thread Safety
 ///
 /// `BlobStore` is safe to use from multiple threads. Each blob operation
 /// is independent, and atomic writes prevent corruption from concurrent
 /// access to the same blob.
+///
+/// ## GC Safety
+///
+/// Use [`BlobStore::track_inflight`] before downloading a blob and
+/// [`BlobStore::untrack_inflight`] after storing it. The [`BlobStore::gc`]
+/// method will skip any digests that are currently in-flight.
 ///
 /// ## Resource Cleanup
 ///
@@ -120,6 +129,11 @@ use tracing::{debug, info, warn};
 pub struct BlobStore {
     /// Base directory for blob storage.
     base_dir: PathBuf,
+    /// Set of digests currently being downloaded (GC-protected).
+    /// 
+    /// SECURITY: Prevents race conditions where GC removes a blob
+    /// that is being written by a concurrent pull operation.
+    inflight: Arc<RwLock<HashSet<String>>>,
 }
 
 impl BlobStore {
@@ -138,7 +152,10 @@ impl BlobStore {
 
         info!("Blob store initialized at: {}", base_dir.display());
 
-        Ok(Self { base_dir })
+        Ok(Self {
+            base_dir,
+            inflight: Arc::new(RwLock::new(HashSet::new())),
+        })
     }
 
     /// Returns the default storage path.
@@ -153,6 +170,41 @@ impl BlobStore {
     /// Returns the base directory.
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
+    }
+
+    /// Marks a digest as in-flight (being downloaded).
+    ///
+    /// Call this BEFORE starting a blob download to protect it from GC.
+    /// Call [`untrack_inflight`] after the blob is stored.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// store.track_inflight(&digest);
+    /// // ... download blob ...
+    /// store.put_blob(&digest, &data)?;
+    /// store.untrack_inflight(&digest);
+    /// ```
+    pub fn track_inflight(&self, digest: &str) {
+        if let Ok(mut inflight) = self.inflight.write() {
+            inflight.insert(digest.to_string());
+            debug!("Tracking in-flight blob: {}", digest);
+        }
+    }
+
+    /// Removes a digest from in-flight tracking.
+    ///
+    /// Call this after successfully storing a blob or if the download fails.
+    pub fn untrack_inflight(&self, digest: &str) {
+        if let Ok(mut inflight) = self.inflight.write() {
+            inflight.remove(digest);
+            debug!("Untracked in-flight blob: {}", digest);
+        }
+    }
+
+    /// Returns the number of blobs currently in-flight.
+    pub fn inflight_count(&self) -> usize {
+        self.inflight.read().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Checks if a blob exists.
@@ -329,41 +381,68 @@ impl BlobStore {
 
     /// Garbage collects unreferenced blobs.
     ///
-    /// # Safety Warning
+    /// Removes blobs that are:
+    /// - NOT in the `referenced` list
+    /// - NOT currently in-flight (being downloaded)
     ///
-    /// **GC is NOT safe during concurrent image pulls.** This method does not
-    /// implement locking or reference counting. Calling GC while `pull_image`
-    /// is in progress may delete layers that are being downloaded, causing
-    /// pull failures or corrupted images.
+    /// # GC Safety
     ///
-    /// Callers MUST ensure:
-    /// 1. All `pull_image` operations are complete before calling GC
-    /// 2. No new pulls are started during GC
-    /// 3. External synchronization (mutex, pause flag) if running in multi-threaded context
+    /// This method is safe to call during concurrent image pulls as long as
+    /// callers use [`track_inflight`] / [`untrack_inflight`] around blob downloads.
+    /// In-flight blobs are automatically protected from deletion.
     ///
-    /// # Future Improvements
+    /// # Arguments
     ///
-    /// A production implementation should use one of:
-    /// - Reference counting with atomic decrement
-    /// - Write-ahead log for in-flight digests
-    /// - File locking on blob files during write
+    /// * `referenced` - List of digests that should be preserved (e.g., from image manifests)
+    ///
+    /// # Returns
+    ///
+    /// Statistics about removed blobs and freed space.
     pub fn gc(&self, referenced: &[String]) -> Result<GcStats> {
+        // Get current in-flight set (clone to release lock quickly)
+        let inflight_set: HashSet<String> = self
+            .inflight
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        if !inflight_set.is_empty() {
+            info!(
+                "GC: protecting {} in-flight blobs from deletion",
+                inflight_set.len()
+            );
+        }
+
         let all_blobs = self.list_blobs()?;
         let mut removed = 0u64;
         let mut freed = 0u64;
+        let mut skipped_inflight = 0u64;
 
         for digest in all_blobs {
-            if !referenced.contains(&digest) {
-                let path = self.blob_path(&digest);
-                if let Ok(meta) = fs::metadata(&path) {
-                    freed += meta.len();
-                    removed += 1;
-                    let _ = fs::remove_file(&path);
-                }
+            // Skip referenced blobs
+            if referenced.contains(&digest) {
+                continue;
+            }
+
+            // SECURITY: Skip in-flight blobs to prevent race conditions
+            if inflight_set.contains(&digest) {
+                skipped_inflight += 1;
+                debug!("GC: skipping in-flight blob {}", digest);
+                continue;
+            }
+
+            let path = self.blob_path(&digest);
+            if let Ok(meta) = fs::metadata(&path) {
+                freed += meta.len();
+                removed += 1;
+                let _ = fs::remove_file(&path);
             }
         }
 
-        info!("GC: removed {} blobs, freed {} bytes", removed, freed);
+        info!(
+            "GC: removed {} blobs, freed {} bytes, skipped {} in-flight",
+            removed, freed, skipped_inflight
+        );
         Ok(GcStats {
             removed_count: removed,
             freed_bytes: freed,

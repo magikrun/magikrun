@@ -3,8 +3,7 @@
 //! Tests for the WindowsRuntime WSL2 MicroVM-based container execution.
 //! These tests are platform-conditional and only run on Windows.
 
-use magikrun::runtime::OciRuntime;
-use magikrun::runtimes::WindowsRuntime;
+use magikrun::runtime::{OciRuntime, WindowsRuntime};
 
 /// Test that WindowsRuntime can be created on any platform.
 #[test]
@@ -84,7 +83,7 @@ mod windows_specific_tests {
 
 /// Integration tests that require WSL2 to be available.
 /// These tests create ephemeral WSL distros for each container.
-#[cfg(all(target_os = "windows", feature = "integration_tests"))]
+#[cfg(all(target_os = "windows", feature = "testing"))]
 mod integration_tests {
     use super::*;
     use std::path::Path;

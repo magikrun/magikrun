@@ -109,39 +109,106 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use magikrun::{Platform, RuntimeRegistry, BlobStore, pull_image, BundleBuilder};
+//! use magikrun::{
+//!     ImageService, BundleBuilder, OciContainerConfig,
+//!     NativeRuntime, OciRuntime, Platform,
+//! };
 //!
 //! #[tokio::main]
 //! async fn main() -> magikrun::Result<()> {
-//!     // Detect platform and available runtimes
-//!     let platform = Platform::detect();
-//!     let registry = RuntimeRegistry::new(&platform)?;
+//!     // CRI pattern: separate image service from runtime
+//!     let image_service = ImageService::new()?;
+//!     let bundle_builder = BundleBuilder::with_storage(image_service.storage().clone())?;
 //!
-//!     // Pull image and build bundle
-//!     let storage = std::sync::Arc::new(BlobStore::new()?);
-//!     let image = pull_image("alpine:3.18", &storage).await?;
-//!     let builder = BundleBuilder::new()?;
-//!     // ... build and run container
+//!     // Step 1: Pull image (CRI ImageService)
+//!     let image = image_service.pull("alpine:3.18").await?;
+//!
+//!     // Step 2: Build bundle from image
+//!     let bundle = bundle_builder.build_oci_bundle(&image, &OciContainerConfig {
+//!         name: "my-container".to_string(),
+//!         command: Some(vec!["/bin/sh".to_string()]),
+//!         ..Default::default()
+//!     })?;
+//!
+//!     // Step 3: Create and start container (CRI RuntimeService)
+//!     let runtime = NativeRuntime::new();
+//!     runtime.create("my-container", bundle.path()).await?;
+//!     runtime.start("my-container").await?;
+//!
 //!     Ok(())
 //! }
 //! ```
 
-pub mod bundle;
-pub mod constants;
-pub mod error;
-pub mod platform;
-pub mod registry;
+// =============================================================================
+// Internal Modules 
+// =============================================================================
+
+mod bundle;
+mod constants;
+mod error;
+mod platform;
+mod registry;
+mod storage;
+mod runtimes;
+
+// =============================================================================
+// Facade Modules
+// =============================================================================
+
+/// Image facade - CRI ImageService pattern.
+///
+/// Provides: `ImageService`, `ImageHandle`, `BundleBuilder`, `Bundle`,
+/// `OciContainerConfig`, `Platform`, `Error`, `Result`
+pub mod image;
+
+/// Runtime facade - CRI RuntimeService pattern.
+///
+/// Provides: `OciRuntime`, `ContainerState`, `ContainerStatus`, `Signal`,
+/// `NativeRuntime`, `WasmtimeRuntime`, `KrunRuntime`, `WindowsRuntime`,
+/// `RuntimeRegistry`, `Error`, `Result`
 pub mod runtime;
-pub mod storage;
 
-pub mod runtimes;
+/// Pod Runtime Interface (PRI) - atomic pod lifecycle.
+///
+/// Provides pod-first orchestration where pods are the atomic unit,
+/// not containers. Unlike CRI's step-by-step model (RunPodSandbox →
+/// CreateContainer → StartContainer), PRI deploys pods atomically:
+///
+/// ```text
+/// run_pod(spec) → RUNNING | ERROR (nothing created)
+/// ```
+///
+/// This module provides:
+/// - `PodRuntime` trait: Atomic pod lifecycle operations
+/// - `PodSpec`, `ContainerSpec`: Pod specification parsing (K8s-compatible)
+/// - `PodHandle`, `PodStatus`, `PodPhase`: Runtime state types
+/// - Runtime implementations: `NativePodRuntime`, `MicroVmPodRuntime`, `WasmPodRuntime`
+///
+/// ## Internal: TSI Protocol
+///
+/// The TSI (Transparent Socket Interface) for MicroVM communication is
+/// internal to this module. It provides vsock-based exec/logs operations
+/// for containers running inside VMs. Pod lifecycle is handled by vminit
+/// reading baked specs - TSI only handles Day-2 operations.
+pub mod pod;
 
-// Re-exports
-pub use bundle::{Bundle, BundleBuilder, BundleFormat};
-pub use constants::*;
-pub use error::{Error, Result};
-pub use platform::{Arch, Capability, Os, Platform};
-pub use registry::{ImageHandle, RegistryClient, pull_image};
-pub use runtime::{ContainerState, ContainerStatus, ExecOptions, ExecResult, OciRuntime, Signal};
-pub use runtimes::{KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime};
-pub use storage::BlobStore;
+/// Infra framework for infrastructure containers/inits.
+///
+/// Provides the core framework for the `vminit` binary and extensions
+/// like workplane. Runs inside pods as the infra-container:
+///
+/// - **Native mode**: Infra-container holds namespaces for other containers to join
+/// - **MicroVM mode**: Same code runs inside VM (vminit spawns containers)
+///
+/// This module provides:
+/// - `Infra`: Core infra-container manager
+/// - `InfraConfig`: Infrastructure configuration
+/// - `InfraExtension`: Trait for extending infra behavior (implemented by workplane)
+/// - `InfraEvent`: Container lifecycle events
+/// - `InfraContext`: Context passed to extensions
+///
+/// ## Symmetric Design
+///
+/// The same infra-container code runs identically in both native and MicroVM
+/// modes. The only difference is the outer environment (host vs VM).
+pub mod infra;

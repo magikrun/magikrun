@@ -124,6 +124,12 @@ mod linux {
     #[derive(Debug, Clone)]
     struct ContainerInfo {
         bundle: PathBuf,
+        /// Container init process PID (captured at start time for waitpid).
+        /// `None` if container not yet started or PID not available.
+        init_pid: Option<i32>,
+        /// Cached exit code (set after waitpid succeeds).
+        /// Prevents repeated waitpid calls for the same container.
+        exit_code: Option<i32>,
     }
 
     /// Native OCI runtime implementation using libcontainer.
@@ -193,6 +199,65 @@ mod linux {
 
             Container::load(container_dir)
                 .map_err(|e| Error::Internal(format!("Failed to load container {}: {}", id, e)))
+        }
+
+        /// Retrieves the exit code for a stopped container.
+        ///
+        /// Uses waitpid(WNOHANG) on the stored init PID to get the exit status.
+        /// Falls back to 0 if PID wasn't captured or waitpid fails.
+        ///
+        /// The exit code is cached to prevent repeated waitpid calls.
+        fn get_exit_code(&self, id: &str) -> Result<i32> {
+            // Get the stored PID
+            let init_pid = {
+                let containers = self
+                    .containers
+                    .read()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                containers.get(id).and_then(|info| info.init_pid)
+            };
+
+            let exit_code = match init_pid {
+                Some(pid) => {
+                    // SAFETY: waitpid is safe to call with a valid PID.
+                    // WNOHANG ensures we don't block if the process hasn't been reaped yet.
+                    // If the process was already reaped (e.g., by init), we get ECHILD.
+                    let mut status: libc::c_int = 0;
+                    let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+
+                    if result > 0 && libc::WIFEXITED(status) {
+                        libc::WEXITSTATUS(status)
+                    } else if result > 0 && libc::WIFSIGNALED(status) {
+                        // Killed by signal - return 128 + signal number (shell convention)
+                        128 + libc::WTERMSIG(status)
+                    } else {
+                        // Process already reaped or error - fall back to 0
+                        debug!(
+                            "waitpid for container {} (PID {}) returned {}: using default exit code 0",
+                            id, pid, result
+                        );
+                        0
+                    }
+                }
+                None => {
+                    // No PID captured - container may have been created before start()
+                    debug!("No init PID for container {}: using default exit code 0", id);
+                    0
+                }
+            };
+
+            // Cache the exit code
+            {
+                let mut containers = self
+                    .containers
+                    .write()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                if let Some(info) = containers.get_mut(id) {
+                    info.exit_code = Some(exit_code);
+                }
+            }
+
+            Ok(exit_code)
         }
     }
 
@@ -272,6 +337,8 @@ mod linux {
                     id.to_string(),
                     ContainerInfo {
                         bundle: bundle.to_path_buf(),
+                        init_pid: None,  // Will be set after start()
+                        exit_code: None, // Will be set by wait()
                     },
                 );
             }
@@ -289,6 +356,18 @@ mod linux {
                 id: id.to_string(),
                 reason: e.to_string(),
             })?;
+
+            // Capture the init PID for exit code tracking via waitpid
+            if let Some(pid) = container.pid() {
+                let mut containers = self
+                    .containers
+                    .write()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                if let Some(info) = containers.get_mut(id) {
+                    info.init_pid = Some(pid.as_raw());
+                    debug!("Captured init PID {} for container {}", pid.as_raw(), id);
+                }
+            }
 
             info!("Started container {}", id);
             Ok(())
@@ -383,6 +462,19 @@ mod linux {
         }
 
         async fn wait(&self, id: &str) -> Result<i32> {
+            // Check for cached exit code first
+            {
+                let containers = self
+                    .containers
+                    .read()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+                if let Some(info) = containers.get(id) {
+                    if let Some(exit_code) = info.exit_code {
+                        return Ok(exit_code);
+                    }
+                }
+            }
+
             // Poll for container exit and retrieve exit code (with timeout)
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
@@ -398,15 +490,9 @@ mod linux {
                 let container = self.load_container(id)?;
 
                 if container.state.status == NativeStatus::Stopped {
-                    // WARNING: libcontainer doesn't expose exit code directly.
-                    // This always returns 0 for stopped containers.
-                    //
-                    // For actual exit code tracking, callers should:
-                    // 1. Get the container PID via state().pid before the process exits
-                    // 2. Use waitpid() in a background task started during start()
-                    //
-                    // This is a known limitation of the libcontainer API.
-                    return Ok(0);
+                    // Container stopped - try to get exit code via waitpid
+                    let exit_code = self.get_exit_code(id)?;
+                    return Ok(exit_code);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }

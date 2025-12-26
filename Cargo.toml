@@ -1,16 +1,22 @@
 [package]
 name = "magikrun"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 description = "Unified OCI runtime for containers, WebAssembly, and microVMs"
 license = "Apache-2.0"
 repository = "https://github.com/magikrun/magikrun"
-keywords = ["oci", "containers", "runtime"]
+keywords = ["oci", "containers", "runtime", "pod"]
 categories = ["virtualization"]
+
+[[bin]]
+name = "magikrun"
+path = "src/bin/magikrun.rs"
 
 [features]
 default = []
-integration_tests = []
+# Exposes internal APIs for testing security properties (layer extraction, etc.)
+# SECURITY: Only enable in test builds, not production
+testing = []
 
 [dependencies]
 # Core
@@ -25,6 +31,9 @@ tracing = "0.1"
 oci-spec = "0.8"
 oci-distribution = "0.11"
 
+# Manifest parsing (K8s Pod YAML)
+serde_yaml = "0.9"
+
 # Executors - wasmtime is cross-platform
 # SECURITY: >=38.0.4 required for RUSTSEC-2025-0118, RUSTSEC-2025-0046
 wasmtime = "40"
@@ -38,7 +47,7 @@ hex = "0.4"
 
 # Utilities
 dirs = "6"
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
@@ -52,6 +61,7 @@ libcgroups = { version = "0.5", default-features = false, features = ["v2"] }
 # libkrun for microVM isolation (Linux and macOS only, not Windows)
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 krun-sys = "1.10"
+tokio-vsock = "0.6"
 
 # Windows runtime support (Windows only)
 [target.'cfg(target_os = "windows")'.dependencies]

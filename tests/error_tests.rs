@@ -2,7 +2,7 @@
 //!
 //! Validates error creation, display formatting, and error category coverage.
 
-use magikrun::Error;
+use magikrun::runtime::Error;
 use std::path::PathBuf;
 use std::time::Duration;
 

@@ -3,7 +3,7 @@
 //! Validates platform detection logic, capability enumeration,
 //! and OCI platform string generation.
 
-use magikrun::{Arch, Capability, Os, Platform};
+use magikrun::image::{Arch, Capability, Os, Platform};
 use std::collections::HashSet;
 
 // =============================================================================

@@ -804,6 +804,11 @@ impl OciRuntime for WindowsRuntime {
             )
         };
 
+        // SECURITY: Shell-escape a string for safe use in sh -c commands
+        fn shell_escape(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
         // Build the command to run inside the distro
         let mut env_exports = String::new();
         for (key, value) in &env {
@@ -812,15 +817,19 @@ impl OciRuntime for WindowsRuntime {
                 warn!("Skipping invalid environment variable name: {}", key);
                 continue;
             }
-            // SECURITY: Quote values to prevent injection
-            let escaped_value = value.replace('\'', "'\\''");
-            env_exports.push_str(&format!("export {}='{}'; ", key, escaped_value));
+            // SECURITY: Shell-escape values to prevent injection
+            env_exports.push_str(&format!("export {}={}; ", key, shell_escape(value)));
         }
 
-        let entrypoint_str = entrypoint.join(" ");
+        // SECURITY: Shell-escape each entrypoint argument individually
+        let escaped_entrypoint: Vec<String> = entrypoint.iter().map(|s| shell_escape(s)).collect();
+        let entrypoint_str = escaped_entrypoint.join(" ");
+
+        // SECURITY: Shell-escape the working directory
+        let escaped_working_dir = shell_escape(&working_dir);
         let full_cmd = format!(
-            "cd '{}' && {} exec {}",
-            working_dir, env_exports, entrypoint_str
+            "cd {} && {} exec {}",
+            escaped_working_dir, env_exports, entrypoint_str
         );
 
         // Start the container process
@@ -1001,6 +1010,11 @@ impl OciRuntime for WindowsRuntime {
             container.distro_name.clone()
         };
 
+        // SECURITY: Shell-escape a string for safe use in sh -c commands
+        fn shell_escape(s: &str) -> String {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+
         // Build command with options
         let mut env_exports = String::new();
         for (key, value) in &opts.env {
@@ -1009,13 +1023,16 @@ impl OciRuntime for WindowsRuntime {
                 warn!("Skipping invalid environment variable name: {}", key);
                 continue;
             }
-            let escaped_value = value.replace('\'', "'\\''");
-            env_exports.push_str(&format!("export {}='{}'; ", key, escaped_value));
+            // SECURITY: Shell-escape values to prevent injection
+            env_exports.push_str(&format!("export {}={}; ", key, shell_escape(value)));
         }
 
+        // SECURITY: Shell-escape working directory and command arguments
         let cwd = opts.working_dir.as_deref().unwrap_or("/");
-        let cmd_str = command.join(" ");
-        let full_cmd = format!("cd '{}' && {} {}", cwd, env_exports, cmd_str);
+        let escaped_cwd = shell_escape(cwd);
+        let escaped_cmd: Vec<String> = command.iter().map(|s| shell_escape(s)).collect();
+        let cmd_str = escaped_cmd.join(" ");
+        let full_cmd = format!("cd {} && {} {}", escaped_cwd, env_exports, cmd_str);
 
         let output = timeout(
             EXEC_TIMEOUT,

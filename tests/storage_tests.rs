@@ -3,7 +3,7 @@
 //! Validates content-addressed storage, digest verification,
 //! path traversal protection, and atomic writes.
 
-use magikrun::BlobStore;
+use magikrun::image::BlobStore;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 

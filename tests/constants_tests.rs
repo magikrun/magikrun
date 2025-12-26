@@ -3,7 +3,9 @@
 //! Validates that security-critical constants have expected values and
 //! that derived limits don't overflow.
 
-use magikrun::constants::*;
+// Import from the facade modules (image and runtime)
+use magikrun::image::*;
+use magikrun::runtime::*;
 use std::time::Duration;
 
 // =============================================================================
@@ -51,35 +53,13 @@ fn test_layers_count_reasonable() {
     assert!(MAX_LAYERS <= 256, "layer count too permissive");
 }
 
-#[test]
-fn test_manifest_size_reasonable() {
-    // Manifests with many layers but not absurdly large
-    assert!(
-        MAX_MANIFEST_SIZE >= 100 * 1024,
-        "manifest limit too restrictive"
-    );
-    assert!(
-        MAX_MANIFEST_SIZE <= 10 * 1024 * 1024,
-        "manifest limit too permissive"
-    );
-}
-
-#[test]
-fn test_config_size_reasonable() {
-    // Image configs with extensive history/labels
-    assert!(
-        MAX_CONFIG_SIZE >= 100 * 1024,
-        "config limit too restrictive"
-    );
-    assert!(
-        MAX_CONFIG_SIZE <= 10 * 1024 * 1024,
-        "config limit too permissive"
-    );
-}
-
 // =============================================================================
-// Overflow Safety Tests
+// Overflow Safety Tests  
 // =============================================================================
+//
+// Note: MAX_MANIFEST_SIZE and MAX_CONFIG_SIZE tests removed. These constants
+// are reserved for future use (when oci_distribution exposes raw bytes) and
+// are intentionally not exported from the public API.
 
 #[test]
 fn test_cumulative_layer_size_no_overflow() {

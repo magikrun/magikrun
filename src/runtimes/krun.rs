@@ -99,26 +99,26 @@
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use crate::constants::{
-        DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_CONTAINERS, validate_container_id,
-    };
+    use crate::constants::{MAX_CONTAINERS, validate_container_id};
     use crate::error::{Error, Result};
     use crate::runtime::{ContainerState, ContainerStatus, OciRuntime, Signal};
     use async_trait::async_trait;
     use std::collections::HashMap;
-    use std::ffi::CString;
     use std::path::{Path, PathBuf};
     use std::sync::RwLock;
     use tracing::{debug, info};
 
-    /// libkrun context handle.
-    type KrunCtx = u32;
-
     /// Internal state tracking for a microVM container.
+    ///
+    /// Note: All libkrun operations are delegated to the `magikrun` CLI binary
+    /// (`magikrun start`) to avoid multi-threaded fork issues and libkrun's
+    /// internal env_logger conflicts. The parent process only tracks
+    /// metadata and child process state.
     struct VmContainer {
         bundle: PathBuf,
         status: ContainerStatus,
-        ctx: Option<KrunCtx>,
+        /// PID of the magikrun process running krun_start_enter
+        child_pid: Option<i32>,
     }
 
     /// Krun OCI runtime for microVM-based isolation.
@@ -156,20 +156,36 @@ mod platform {
                 }
             }
 
-            // SAFETY: krun_create_ctx is safe to call
-            unsafe {
-                let ctx = krun_sys::krun_create_ctx();
-                if ctx < 0 {
-                    return (false, Some(format!("libkrun unavailable: error {}", ctx)));
+            // On macOS, check for Hypervisor.framework entitlement by verifying
+            // the helper binary exists. We avoid calling libkrun here because
+            // it uses env_logger::init() which panics if logging is already initialized.
+            #[cfg(target_os = "macos")]
+            {
+                // The helper binary will fail at runtime if HVF is not available
+                // For now, assume availability if we're on macOS with ARM64
+                #[cfg(target_arch = "aarch64")]
+                {
+                    info!("krun runtime available (macOS ARM64 with HVF)");
+                    (true, None)
                 }
-                krun_sys::krun_free_ctx(ctx as u32);
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    (
+                        false,
+                        Some("krun requires Apple Silicon (ARM64) on macOS".to_string()),
+                    )
+                }
             }
 
-            info!("krun runtime available");
-            (true, None)
+            #[cfg(target_os = "linux")]
+            {
+                info!("krun runtime available (Linux with KVM)");
+                (true, None)
+            }
         }
 
-        fn configure_vm(&self, ctx: KrunCtx, bundle: &Path) -> Result<()> {
+        /// Validates that the bundle has the required structure for a microVM.
+        fn validate_bundle(bundle: &Path) -> Result<()> {
             let rootfs = bundle.join("rootfs");
 
             if !rootfs.exists() {
@@ -179,54 +195,18 @@ mod platform {
                 });
             }
 
-            // SAFETY: krun_set_vm_config is safe with valid ctx and params
-            let ret = unsafe {
-                krun_sys::krun_set_vm_config(ctx, DEFAULT_VCPUS as u8, DEFAULT_VM_MEMORY_MIB)
-            };
-            if ret < 0 {
-                return Err(Error::CreateFailed {
-                    id: bundle.to_string_lossy().to_string(),
-                    reason: format!("krun_set_vm_config failed: {}", ret),
-                });
-            }
+            // Check for init or shell (using symlink_metadata to not follow symlinks,
+            // since symlinks in container rootfs often point to absolute paths that
+            // won't exist on the host but will resolve correctly inside the VM).
+            let init_path = rootfs.join("sbin/init");
+            let shell_path = rootfs.join("bin/sh");
+            let has_init = std::fs::symlink_metadata(&init_path).is_ok()
+                || std::fs::symlink_metadata(&shell_path).is_ok();
 
-            let rootfs_cstr = CString::new(rootfs.to_string_lossy().as_bytes()).map_err(|_| {
-                Error::CreateFailed {
-                    id: bundle.to_string_lossy().to_string(),
-                    reason: "invalid rootfs path".to_string(),
-                }
-            })?;
-
-            // SAFETY: krun_set_root is safe with valid ctx and path
-            let ret = unsafe { krun_sys::krun_set_root(ctx, rootfs_cstr.as_ptr()) };
-            if ret < 0 {
-                return Err(Error::CreateFailed {
-                    id: bundle.to_string_lossy().to_string(),
-                    reason: format!("krun_set_root failed: {}", ret),
-                });
-            }
-
-            let init_path = if rootfs.join("sbin/init").exists() {
-                "/sbin/init"
-            } else if rootfs.join("bin/sh").exists() {
-                "/bin/sh"
-            } else {
+            if !has_init {
                 return Err(Error::InvalidBundle {
                     path: bundle.to_path_buf(),
                     reason: "no init or shell found in rootfs".to_string(),
-                });
-            };
-
-            let init_cstr = CString::new(init_path).unwrap();
-
-            // SAFETY: krun_set_exec is safe with valid ctx and path
-            let ret = unsafe {
-                krun_sys::krun_set_exec(ctx, init_cstr.as_ptr(), std::ptr::null(), std::ptr::null())
-            };
-            if ret < 0 {
-                return Err(Error::CreateFailed {
-                    id: bundle.to_string_lossy().to_string(),
-                    reason: format!("krun_set_exec failed: {}", ret),
                 });
             }
 
@@ -266,43 +246,16 @@ mod platform {
                 reason: reason.to_string(),
             })?;
 
+            // Validate bundle structure before storing
+            Self::validate_bundle(bundle)?;
+
             {
-                let containers = self
+                let mut containers = self
                     .containers
-                    .read()
+                    .write()
                     .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
-                if containers.len() >= MAX_CONTAINERS {
-                    return Err(Error::ResourceExhausted(format!(
-                        "maximum container limit reached ({})",
-                        MAX_CONTAINERS
-                    )));
-                }
-            }
-
-            // SAFETY: krun_create_ctx is safe to call
-            let ctx = unsafe { krun_sys::krun_create_ctx() };
-            if ctx < 0 {
-                return Err(Error::CreateFailed {
-                    id: id.to_string(),
-                    reason: format!("krun_create_ctx failed: {}", ctx),
-                });
-            }
-            let ctx = ctx as KrunCtx;
-
-            if let Err(e) = self.configure_vm(ctx, bundle) {
-                // SAFETY: Free context on error
-                unsafe { krun_sys::krun_free_ctx(ctx) };
-                return Err(e);
-            }
-
-            {
-                let mut containers = self.containers.write().map_err(|e| {
-                    unsafe { krun_sys::krun_free_ctx(ctx) };
-                    Error::Internal(format!("lock poisoned: {}", e))
-                })?;
 
                 if containers.len() >= MAX_CONTAINERS {
-                    unsafe { krun_sys::krun_free_ctx(ctx) };
                     return Err(Error::ResourceExhausted(format!(
                         "maximum container limit reached ({})",
                         MAX_CONTAINERS
@@ -310,16 +263,16 @@ mod platform {
                 }
 
                 if containers.contains_key(id) {
-                    unsafe { krun_sys::krun_free_ctx(ctx) };
                     return Err(Error::ContainerAlreadyExists(id.to_string()));
                 }
 
+                // Just store metadata - all libkrun operations happen in the helper binary
                 containers.insert(
                     id.to_string(),
                     VmContainer {
                         bundle: bundle.to_path_buf(),
                         status: ContainerStatus::Created,
-                        ctx: Some(ctx),
+                        child_pid: None,
                     },
                 );
             }
@@ -331,14 +284,15 @@ mod platform {
         async fn start(&self, id: &str) -> Result<()> {
             debug!("Starting microVM container {}", id);
 
-            let ctx = {
-                let mut containers = self
+            // Validate container exists and is in created state
+            {
+                let containers = self
                     .containers
-                    .write()
+                    .read()
                     .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
                 let container = containers
-                    .get_mut(id)
+                    .get(id)
                     .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
                 if container.status != ContainerStatus::Created {
@@ -348,41 +302,133 @@ mod platform {
                         expected: "created".to_string(),
                     });
                 }
-
-                container.status = ContainerStatus::Running;
-                container
-                    .ctx
-                    .ok_or_else(|| Error::Internal("no context".to_string()))?
-            };
-
-            // SAFETY: krun_start_enter is safe with valid ctx
-            let ret = unsafe { krun_sys::krun_start_enter(ctx) };
-            if ret < 0 {
-                return Err(Error::StartFailed {
-                    id: id.to_string(),
-                    reason: format!("krun_start_enter failed: {}", ret),
-                });
             }
 
-            info!("Started microVM container {}", id);
+            // Spawn the magikrun CLI binary in a fresh process.
+            // This is the standard OCI runtime pattern - the CLI process becomes the VM.
+            // We call ourselves (magikrun start) which handles krun_start_enter().
+            
+            // Find the magikrun binary - try various locations
+            let magikrun_path = std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    // If we ARE magikrun, use our own path
+                    if exe.file_name().is_some_and(|n| n == "magikrun") {
+                        return Some(exe);
+                    }
+                    // Try same directory as current exe
+                    exe.parent()
+                        .map(|d| d.join("magikrun"))
+                        .filter(|p| p.exists())
+                        // Try parent directory (if exe is in deps/)
+                        .or_else(|| {
+                            exe.parent()
+                                .and_then(|d| d.parent())
+                                .map(|d| d.join("magikrun"))
+                                .filter(|p| p.exists())
+                        })
+                })
+                .or_else(|| {
+                    // Try CARGO_TARGET_DIR if set
+                    std::env::var("CARGO_TARGET_DIR").ok().map(|d| {
+                        std::path::PathBuf::from(d)
+                            .join("debug")
+                            .join("magikrun")
+                    }).filter(|p| p.exists())
+                })
+                .or_else(|| {
+                    // Try MAGIKRUN_PATH env var
+                    std::env::var("MAGIKRUN_PATH").ok().map(std::path::PathBuf::from).filter(|p| p.exists())
+                })
+                .or_else(|| {
+                    // Fall back to PATH
+                    std::env::var("PATH").ok().and_then(|path| {
+                        path.split(':')
+                            .map(|dir| std::path::Path::new(dir).join("magikrun"))
+                            .find(|p| p.exists())
+                    })
+                })
+                .ok_or_else(|| Error::RuntimeUnavailable {
+                    runtime: "krun".to_string(),
+                    reason: "magikrun binary not found. Set MAGIKRUN_PATH or install to PATH".to_string(),
+                })?;
+
+            // Build command: magikrun start <id>
+            // The bundle path is already stored in the state file
+            let mut cmd = std::process::Command::new(&magikrun_path);
+            cmd.arg("start").arg(id);
+
+            // On macOS, set library path for libkrunfw
+            #[cfg(target_os = "macos")]
+            {
+                cmd.env(
+                    "DYLD_FALLBACK_LIBRARY_PATH",
+                    "/usr/local/lib:/opt/homebrew/lib",
+                );
+            }
+
+            let child = cmd.spawn().map_err(|e| Error::StartFailed {
+                id: id.to_string(),
+                reason: format!("failed to spawn magikrun: {}", e),
+            })?;
+
+            let child_pid = child.id() as i32;
+
+            // Record the child PID
+            {
+                let mut containers = self
+                    .containers
+                    .write()
+                    .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
+
+                if let Some(container) = containers.get_mut(id) {
+                    container.status = ContainerStatus::Running;
+                    container.child_pid = Some(child_pid);
+                }
+            }
+
+            info!("Started microVM container {} with PID {}", id, child_pid);
             Ok(())
         }
 
         async fn state(&self, id: &str) -> Result<ContainerState> {
-            let containers = self
+            let mut containers = self
                 .containers
-                .read()
+                .write()
                 .map_err(|e| Error::Internal(format!("lock poisoned: {}", e)))?;
 
             let container = containers
-                .get(id)
+                .get_mut(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
+
+            // Check if child process has exited (non-blocking)
+            if let Some(child_pid) = container.child_pid
+                && container.status == ContainerStatus::Running
+            {
+                let mut status: i32 = 0;
+                // SAFETY: waitpid with WNOHANG is safe with valid PID
+                let ret = unsafe { libc::waitpid(child_pid, &mut status, libc::WNOHANG) };
+                if ret == child_pid {
+                    // Child has exited
+                    container.status = ContainerStatus::Stopped;
+                    container.child_pid = None;
+                    debug!("Child process {} has exited", child_pid);
+                } else if ret == -1 {
+                    // Error checking - child may not exist
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() == Some(libc::ECHILD) {
+                        container.status = ContainerStatus::Stopped;
+                        container.child_pid = None;
+                    }
+                }
+                // ret == 0 means child still running
+            }
 
             Ok(ContainerState {
                 oci_version: "1.0.2".to_string(),
                 id: id.to_string(),
                 status: container.status,
-                pid: None,
+                pid: container.child_pid.map(|p| p as u32),
                 bundle: container.bundle.to_string_lossy().to_string(),
                 annotations: HashMap::new(),
             })
@@ -400,9 +446,24 @@ mod platform {
                 .get_mut(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
-            if let Some(ctx) = container.ctx.take() {
-                // SAFETY: krun_free_ctx is safe with valid ctx
-                unsafe { krun_sys::krun_free_ctx(ctx) };
+            // Send signal to the child process running the VM
+            if let Some(child_pid) = container.child_pid {
+                let sig = match signal {
+                    Signal::Term => libc::SIGTERM,
+                    Signal::Kill => libc::SIGKILL,
+                    Signal::Int => libc::SIGINT,
+                    Signal::Hup => libc::SIGHUP,
+                    Signal::Usr1 => libc::SIGUSR1,
+                    Signal::Usr2 => libc::SIGUSR2,
+                };
+                // SAFETY: kill() is safe to call with a valid PID
+                let ret = unsafe { libc::kill(child_pid, sig) };
+                if ret != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                    return Err(Error::SignalFailed {
+                        id: id.to_string(),
+                        reason: format!("kill failed: {}", std::io::Error::last_os_error()),
+                    });
+                }
             }
 
             container.status = ContainerStatus::Stopped;
@@ -431,9 +492,14 @@ mod platform {
                 });
             }
 
-            if let Some(ctx) = container.ctx.take() {
-                // SAFETY: krun_free_ctx is safe with valid ctx
-                unsafe { krun_sys::krun_free_ctx(ctx) };
+            // Force kill the child process if still running
+            if force
+                && let Some(child_pid) = container.child_pid
+            {
+                // SAFETY: kill() is safe with valid PID
+                unsafe { libc::kill(child_pid, libc::SIGKILL) };
+                // Wait for child to avoid zombie
+                unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), libc::WNOHANG) };
             }
 
             containers.remove(id);

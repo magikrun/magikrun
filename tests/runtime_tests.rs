@@ -3,7 +3,7 @@
 //! Validates OciRuntime trait contract, container state machine,
 //! and signal handling.
 
-use magikrun::{ContainerState, ContainerStatus, Signal};
+use magikrun::runtime::{ContainerState, ContainerStatus, Signal};
 
 // =============================================================================
 // ContainerStatus Tests

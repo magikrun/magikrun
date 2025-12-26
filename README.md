@@ -1,50 +1,76 @@
 # magikrun
 
-**OCI-Compliant Container Runtime Abstraction Layer**
+**OCI-Compliant Container Runtime with Pod Runtime Interface (PRI)**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024_edition-orange.svg)]()
 [![Crates.io](https://img.shields.io/crates/v/magikrun.svg)](https://crates.io/crates/magikrun)
 [![Documentation](https://docs.rs/magikrun/badge.svg)](https://docs.rs/magikrun)
 
-`magikrun` provides a pure OCI Runtime Spec compliant interface for container operations across heterogeneous isolation backends. It handles single-container operations only—pod semantics (shared namespaces, pause containers) are delegated to the higher-level [`magikpod`](../magikpod) crate.
+`magikrun` is a container runtime abstraction layer that provides both OCI Runtime Spec compliance and a novel **Pod Runtime Interface (PRI)** for atomic pod operations across heterogeneous isolation backends.
 
-## Runtime Flavours Matrix
+## From CRI to PRI: Evolution of Container Interfaces
 
-| Runtime           | Linux | macOS | Windows | Isolation Technology       | Bundle Format         |
-|-------------------|:-----:|:-----:|:-------:|----------------------------|-----------------------|
-| **NativeRuntime**  |   ✅  |   ❌  |   ❌    | Namespaces + cgroups v2    | `Bundle::OciRuntime`  |
-| **WindowsRuntime**|   ❌  |   ❌  |   ✅    | WSL2 + Job Objects         | `Bundle::OciRuntime`  |
-| **WasmtimeRuntime**|  ✅  |   ✅  |   ✅    | WASM sandbox + WASI        | `Bundle::Wasm`        |
-| **KrunRuntime**   |   ✅  |   ✅  |   ❌    | MicroVM (KVM / HVF)        | `Bundle::MicroVm`     |
+### The CRI Problem
 
-### At a Glance
+Kubernetes introduced the **Container Runtime Interface (CRI)** to decouple from Docker. CRI treats pods as composite structures built step-by-step:
 
-| Aspect           | NativeRuntime              | WindowsRuntime            | WasmtimeRuntime           | KrunRuntime                |
-|------------------|---------------------------|---------------------------|---------------------------|----------------------------|
-| **Use Case**     | Production containers     | Linux containers on Win   | Portable plugins          | Untrusted workloads        |
-| **Isolation**    | Kernel namespaces         | WSL2 + Job Objects        | Language-level sandbox    | Hardware VM boundary       |
-| **Startup**      | ~50ms                     | ~100ms                    | ~5ms                      | ~100ms                     |
-| **Memory**       | Shared with host (cgroup) | WSL2 VM allocation        | 4 GiB max (WASM pages)    | 4 GiB max (VM allocation)  |
-| **CPU Limit**    | cgroups v2                | WSL2 + Job limits         | Fuel (1B ops default)     | vCPUs (8 max)              |
-| **Networking**   | Native Linux netns        | WSL2 NAT/bridged          | WASI sockets (limited)    | virtio-net (full stack)    |
-| **Filesystem**   | Native rootfs             | WSL2 + 9P/Plan9           | WASI preopens only        | virtio-fs                  |
-| **Dependencies** | libcontainer/libcgroups   | WSL2 + windows-sys        | Pure Rust (wasmtime)      | libkrun (FFI)              |
+```
+CRI Workflow:
+─────────────────────────────────────────────────────────────────────
+RunPodSandbox()           → Creates pause container + namespaces
+CreateContainer(A)        → Prepares container A (not running)
+StartContainer(A)         → Runs container A
+CreateContainer(B)        → Prepares container B
+StartContainer(B)         → Runs container B
+...wait for user/health checks...
+StopContainer(B)          → Graceful stop
+StopContainer(A)          → Graceful stop  
+RemoveContainer(B)        → Cleanup container B
+RemoveContainer(A)        → Cleanup container A
+StopPodSandbox()          → Stop pause container
+RemovePodSandbox()        → Delete namespace holder
+─────────────────────────────────────────────────────────────────────
+             11+ API calls, intermediate failure states possible
+```
 
-### Platform Detection
+**Problems with CRI:**
+1. **Partial failure states**: What if `StartContainer(B)` fails after `A` is running?
+2. **Complex rollback logic**: Kubelet must track and undo partial progress
+3. **Race conditions**: Namespace sharing during step-by-step creation
+4. **Overhead**: Multiple RPC round-trips per pod
+5. **Impedance mismatch**: Pods are the scheduling unit, but CRI operates on containers
 
-`magikrun` automatically detects available capabilities at runtime:
+### The PRI Solution
 
-| Capability        | Detection Method                              | Required For      |
-|-------------------|-----------------------------------------------|-------------------|
-| Namespaces        | `/proc/self/ns/*` availability                | NativeRuntime      |
-| cgroups v2        | `/sys/fs/cgroup/cgroup.controllers` presence  | NativeRuntime      |
-| Seccomp           | `prctl(PR_GET_SECCOMP)` support               | NativeRuntime      |
-| Windows 10+       | `GetVersionExW()` version check               | WindowsRuntime    |
-| WSL2              | `wsl --status` or registry check              | WindowsRuntime    |
-| KVM               | `/dev/kvm` device node                        | KrunRuntime       |
-| Hypervisor.framework | `sysctl kern.hv_support`                   | KrunRuntime       |
-| WASM Runtime      | Always available (compiled-in wasmtime)       | WasmtimeRuntime   |
+**Pod Runtime Interface (PRI)** treats pods as the atomic unit of deployment:
+
+```
+PRI Workflow:
+─────────────────────────────────────────────────────────────────────
+run_pod(spec)             → RUNNING (all containers) or ERROR (nothing)
+...pod lifecycle...
+stop_pod(id, grace)       → Graceful shutdown
+delete_pod(id)            → Complete cleanup
+─────────────────────────────────────────────────────────────────────
+             3 operations, no intermediate states
+```
+
+**PRI Properties:**
+- **Atomic**: Either all containers start or none do (automatic rollback)
+- **Stateless**: No orphaned resources on failure
+- **Immutable**: Replace pods, don't repair them
+- **Self-healing friendly**: Failed pod = delete + reschedule (simple!)
+
+### Why Now?
+
+Several factors make PRI the right approach today:
+
+1. **MicroVMs**: Hardware VM isolation (KVM, Hypervisor.framework) provides natural atomicity—VM boot is all-or-nothing
+2. **WASM**: WebAssembly runtimes create isolated stores atomically
+3. **GitOps/Immutable Infrastructure**: Pods are cattle, not pets—replace don't repair
+4. **Edge/IoT**: Simpler semantics reduce resource overhead
+5. **Security**: Fewer intermediate states = smaller attack surface
 
 ## Architecture
 
@@ -52,308 +78,310 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           magikrun                                  │
 ├─────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    OciRuntime Trait                         │    │
-│  │    create(id, bundle) → start(id) → kill(id) → delete(id)  │    │
-│  │                         state(id)                           │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                              │                                      │
-│  ┌───────────────────────────┼───────────────────────────────┐      │
-│  │                   Bundle Building                         │      │
-│  │  OCI Image → Layers → Rootfs + config.json                │      │
-│  │  Path traversal protection │ Size limits │ Whiteout files │      │
-│  └───────────────────────────┼───────────────────────────────┘      │
-│                              │                                      │
-│  ┌───────────────────────────┼───────────────────────────────┐      │
-│  │               Content-Addressed Storage                   │      │
-│  │  Digest verification │ Deduplication │ Atomic writes      │      │
-│  └───────────────────────────────────────────────────────────┘      │
-├─────────────────────────────────────────────────────────────────────┤
-│                      Runtime Backends                               │
-│  ┌──────────────────┐  ┌───────────────────┐  ┌───────────────┐     │
-│  │  NativeRuntime    │  │  WindowsRuntime   │  │WasmtimeRuntime│     │
-│  │     (Linux)      │  │    (Windows)      │  │  (Cross-plat) │     │
-│  │   Namespaces     │  │  WSL2 + Jobs      │  │  WASI + Fuel  │     │
-│  │   Cgroups v2     │  │  Linux on Win     │  │  256MB limit  │     │
-│  └──────────────────┘  └───────────────────┘  └───────────────┘     │
 │                                                                     │
-│  ┌──────────────────┐                                               │
-│  │   KrunRuntime    │                                               │
-│  │    (MicroVM)     │                                               │
-│  │   KVM / HVF      │                                               │
-│  │    4GB limit     │                                               │
-│  └──────────────────┘                                               │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                  Pod Runtime Interface (PRI)                  │  │
+│  │        run_pod(spec) → stop_pod(id) → delete_pod(id)         │  │
+│  │                                                               │  │
+│  │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │  │
+│  │   │ NativePod   │  │ MicroVmPod  │  │  WasmPod    │          │  │
+│  │   │  Runtime    │  │  Runtime    │  │  Runtime    │          │  │
+│  │   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │  │
+│  │          │                │                │                  │  │
+│  └──────────┼────────────────┼────────────────┼──────────────────┘  │
+│             │ uses           │ uses           │ uses                │
+│             ▼                ▼                ▼                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                  OCI Runtime (Single Container)               │  │
+│  │         create(id, bundle) → start → kill → delete           │  │
+│  │                                                               │  │
+│  │   ┌──────────────┐ ┌──────────────┐ ┌───────────────────────┐ │  │
+│  │   │NativeRuntime │ │  KrunRuntime │ │   WasmtimeRuntime     │ │  │
+│  │   │   (youki)    │ │   (libkrun)  │ │     (wasmtime)        │ │  │
+│  │   └──────────────┘ └──────────────┘ └───────────────────────┘ │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                              │                                      │
+│  ┌───────────────────────────┼───────────────────────────────────┐  │
+│  │                   Image & Bundle Building                     │  │
+│  │  OCI Registry → Layers → Rootfs + config.json                │  │
+│  │  Path traversal protection │ Size limits │ Whiteout handling │  │
+│  └───────────────────────────┼───────────────────────────────────┘  │
+│                              │                                      │
+│  ┌───────────────────────────┼───────────────────────────────────┐  │
+│  │               Content-Addressed Storage                       │  │
+│  │  SHA-256 verification │ Deduplication │ Atomic writes         │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                    Infra Framework                            │  │
+│  │   Infra + InfraExtension (workplane, mesh, service discovery) │  │
+│  │   Runs inside infra-container (same code: native & MicroVM)   │  │
+│  └───────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## OCI Runtime Spec Compliance
+### Layer Relationships
 
-Implements the [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec) container lifecycle:
+| Layer | Uses | Purpose |
+|-------|------|---------|
+| **PRI (pod module)** | OCI Runtime | Atomic pod lifecycle with rollback |
+| **OCI Runtime (runtime module)** | Bundle Builder, Storage | Single container lifecycle |
+| **Image & Bundle (image module)** | Storage, Registry | Pull images, build OCI bundles |
+| **Storage** | Filesystem | Content-addressed blob storage |
+| **Infra (infra module)** | — | Framework for infra-container binaries |
+
+## Module Structure
+
+| Module | Description |
+|--------|-------------|
+| `image` | CRI ImageService pattern: pull images, build bundles |
+| `runtime` | OCI RuntimeService: single-container lifecycle (create/start/kill/delete) |
+| `pod` | **PRI**: Atomic pod lifecycle with `PodRuntime` trait |
+| `infra` | Infra-container framework for extensions (workplane, mesh) |
+
+## OCI Runtimes (Single Container)
+
+| Runtime | Platform | Backend | Use Case |
+|---------|----------|---------|----------|
+| `NativeRuntime` | Linux | youki (libcontainer) | Standard Linux containers |
+| `KrunRuntime` | Linux/macOS | libkrun | MicroVM-isolated containers |
+| `WasmtimeRuntime` | All | wasmtime | WASM/WASI workloads |
+| `WindowsRuntime` | Windows | (stub) | Windows container support |
+
+These are the **building blocks** that PRI Pod Runtimes compose for atomic pod operations.
+
+## Pod Runtimes (PRI)
+
+| Runtime | Platform | Backend | Isolation | Atomicity |
+|---------|----------|---------|-----------|-----------|
+| `NativePodRuntime` | Linux | youki + pause | Namespaces + cgroups v2 | Emulated (rollback) |
+| `MicroVmPodRuntime` | Linux/macOS | libkrun | Hardware VM (KVM/HVF) | Natural (VM boot) |
+| `WasmPodRuntime` | All | wasmtime | WASM sandbox | Natural (store) |
+
+### Atomicity Explained
+
+**Native Pods** (emulated atomicity):
+```
+1. Create pause container (holds namespaces)
+2. Start infra-container (joins namespaces)
+3. Start app containers (join namespaces)
+4. If any step fails → rollback all previous steps
+5. Return success only when ALL running
+```
+
+**MicroVM Pods** (natural atomicity):
+```
+1. Build composite rootfs with all container images
+2. Bake pod spec into VM filesystem
+3. Boot VM (vminit spawns containers)
+4. VM either boots completely or fails → nothing to clean up
+```
+
+**WASM Pods** (natural atomicity):
+```
+1. Create wasmtime Store (isolated memory)
+2. Load all modules
+3. Link and instantiate
+4. If any fails → store is dropped, no leaks
+```
+
+## The Infra-Container
+
+Every pod has an **infra-container** that:
+- Holds Linux namespaces (network, IPC, UTS) for other containers to join
+- Runs workplane extensions (service discovery, Raft consensus, mesh)
+- Provides the "pause" functionality but with active capabilities
+
+### Symmetric Design
+
+The same infra-container code runs in both native and MicroVM modes:
 
 ```
-                   ┌──────────────────────────────────────────────┐
-                   │                                              │
-                   ▼                                              │
-  ┌─────────┐   create   ┌─────────┐   start   ┌─────────┐       │
-  │ (none)  │ ─────────► │ Created │ ────────► │ Running │       │
-  └─────────┘            └─────────┘           └────┬────┘       │
-                              │                     │            │
-                              │ delete              │ kill       │
-                              │ (if created)        │            │
-                              ▼                     ▼            │
-                         ┌─────────┐           ┌─────────┐       │
-                         │ Deleted │ ◄──────── │ Stopped │ ──────┘
-                         └─────────┘  delete   └─────────┘
+Native Mode:                          MicroVM Mode:
+─────────────────────────             ─────────────────────────────────────
+                                      
+┌─────────────────────────┐           ┌─────────────────────────────────────┐
+│ Pod                     │           │ VM                                  │
+│  ┌───────────────────┐  │           │  vminit (PID 1)                     │
+│  │ infra-container   │  │           │  │ spawns containers                │
+│  │  (workplane)      │  │           │  │ reaps zombies                    │
+│  └───────────────────┘  │           │  │ forwards signals                 │
+│  ┌───────────────────┐  │           │  │                                  │
+│  │ app-container     │  │           │  ├─► infra-container (SAME CODE)    │
+│  └───────────────────┘  │           │  └─► app-container                  │
+└─────────────────────────┘           └─────────────────────────────────────┘
 ```
 
-### Core Operations
+## Security Model
 
-| Operation | Input                 | Effect                              |
-|-----------|-----------------------|-------------------------------------|
-| `create`  | container ID, bundle  | Sets up container without starting  |
-| `start`   | container ID          | Executes the container process      |
-| `state`   | container ID          | Returns current container state     |
-| `kill`    | container ID, signal  | Sends signal to container process   |
-| `delete`  | container ID          | Removes container resources         |
-
-## Runtime Backends
-
-| Runtime           | Platform       | Isolation            | Use Case                  |
-|-------------------|----------------|----------------------|---------------------------|
-| `NativeRuntime`    | Linux only     | Namespaces + cgroups | Production containers     |
-| `WindowsRuntime`  | Windows only   | WSL2 + Job Objects   | Linux containers on Win   |
-| `WasmtimeRuntime` | Cross-platform | WASM sandbox         | Portable plugins          |
-| `KrunRuntime`     | Linux/macOS    | Hardware VM (KVM/HVF)| Untrusted workloads       |
-
-### Isolation Hierarchy
-
-Defense-in-depth with layered isolation:
+### Isolation Hierarchy (Defense-in-Depth)
 
 ```
 ┌───────────────────────────────────────────────────┐
-│                  KrunRuntime                      │  ← Hardware VM boundary
+│                  MicroVM                          │  ← Hardware VM boundary
 │  ┌─────────────────────────────────────────────┐  │
-│  │       NativeRuntime / WindowsRuntime         │  │  ← Kernel/OS boundary
+│  │            Native Container                 │  │  ← Kernel namespace boundary
 │  │  ┌───────────────────────────────────────┐  │  │
-│  │  │         WasmtimeRuntime               │  │  │  ← WASM sandbox boundary
-│  │  │                                       │  │  │
+│  │  │              WASM                     │  │  │  ← Language sandbox boundary
 │  │  └───────────────────────────────────────┘  │  │
 │  └─────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────┘
 ```
 
-## Security Model
-
-### Key Security Properties
-
-- **Path Traversal Protection**: All tar extraction validates paths against `..` components and absolute paths
-- **Size Limits**: Bounded constants prevent resource exhaustion
-- **Digest Verification**: Content-addressed storage verifies SHA-256 before storing blobs
-- **Fuel Limits**: WASM execution bounded by instruction count
-- **Timeouts**: All network operations bounded
+| Runtime | Isolation Level | Attack Surface | Use Case |
+|---------|-----------------|----------------|----------|
+| `MicroVmPodRuntime` | Hardware VM | Minimal (VMM only) | Untrusted workloads |
+| `NativePodRuntime` | Kernel namespaces | Kernel syscalls | Multi-tenant pods |
+| `WasmPodRuntime` | WASM sandbox | WASI only | Portable plugins |
 
 ### Security Constants
 
-| Constant               | Value    | Purpose                          |
-|------------------------|----------|----------------------------------|
-| `MAX_LAYER_SIZE`       | 512 MiB  | Per-layer size limit             |
-| `MAX_ROOTFS_SIZE`      | 4 GiB    | Total rootfs size limit          |
-| `MAX_LAYERS`           | 128      | Maximum layers per image         |
-| `MAX_WASM_MODULE_SIZE` | 256 MiB  | WASM module size limit           |
-| `MAX_WASM_MEMORY_PAGES`| 65,536   | WASM memory limit (4 GiB)        |
-| `DEFAULT_WASM_FUEL`    | 1B ops   | WASM instruction limit           |
-| `MAX_VM_MEMORY_MIB`    | 4,096    | MicroVM memory limit             |
-| `MAX_VCPUS`            | 8        | MicroVM vCPU limit               |
-| `IMAGE_PULL_TIMEOUT`   | 300s     | Registry pull timeout            |
-| `CONTAINER_START_TIMEOUT` | 60s   | Container start timeout          |
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_LAYER_SIZE` | 512 MiB | Per-layer extraction limit |
+| `MAX_ROOTFS_SIZE` | 4 GiB | Total rootfs size limit |
+| `MAX_LAYERS` | 128 | Maximum layers per image |
+| `MAX_CONTAINERS_PER_POD` | 16 | Pod container limit |
+| `MAX_WASM_MODULE_SIZE` | 256 MiB | WASM module limit |
+| `DEFAULT_WASM_FUEL` | 1B ops | WASM instruction limit |
+| `MAX_VM_MEMORY_MIB` | 4,096 | MicroVM memory limit |
+| `MAX_VCPUS` | 8 | MicroVM vCPU limit |
+| `IMAGE_PULL_TIMEOUT` | 300s | Registry timeout |
 
 ## Usage
 
-### Add Dependency
-
-```toml
-[dependencies]
-magikrun = "0.1"
-```
-
-### Example
+### PRI (Recommended)
 
 ```rust
-use magikrun::{Platform, BlobStore, pull_image, BundleBuilder};
-use magikrun::runtimes::RuntimeRegistry;
+use magikrun::pod::{PodRuntime, PodSpec, NativePodRuntime};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> magikrun::Result<()> {
-    // Detect platform and available runtimes
-    let platform = Platform::detect();
-    let registry = RuntimeRegistry::new(&platform)?;
+    let runtime = NativePodRuntime::new()?;
     
-    // List available runtimes
-    for name in registry.available_runtimes() {
-        println!("Available: {}", name);
-    }
-
-    // Pull image and store layers
-    let storage = std::sync::Arc::new(BlobStore::new()?);
-    let image = pull_image("alpine:3.18", &storage).await?;
+    // Parse K8s-compatible pod manifest
+    let spec = PodSpec::from_yaml(include_bytes!("pod.yaml"))?;
     
-    // Build OCI bundle
-    let builder = BundleBuilder::new()?;
-    let bundle = builder
-        .image(&image)
-        .storage(&storage)
-        .build()
-        .await?;
+    // Atomic: either fully running or error (nothing created)
+    let handle = runtime.run_pod(&spec).await?;
+    println!("Pod {} running", handle.id);
     
-    // Get a runtime and run container
-    if let Some(runtime) = registry.get("wasmtime") {
-        runtime.create("my-container", &bundle).await?;
-        runtime.start("my-container").await?;
-        
-        // Check state
-        let state = runtime.state("my-container").await?;
-        println!("Status: {:?}", state.status);
-        
-        // Cleanup
-        runtime.kill("my-container", magikrun::Signal::Term).await?;
-        runtime.delete("my-container").await?;
-    }
+    // Check status
+    let status = runtime.pod_status(&handle.id).await?;
+    println!("Phase: {:?}", status.phase);
+    
+    // Graceful stop with 30s grace period
+    runtime.stop_pod(&handle.id, Duration::from_secs(30)).await?;
+    runtime.delete_pod(&handle.id, false).await?;
     
     Ok(())
 }
 ```
 
-## No Pod Semantics
-
-This crate intentionally excludes pod-level concepts. Each container is independent. For namespace sharing and pod orchestration, use [`magikpod`](../magikpod) which configures namespace paths in `config.json`:
-
-```json
-{
-  "linux": {
-    "namespaces": [
-      { "type": "pid" },
-      { "type": "network", "path": "/proc/1234/ns/net" }
-    ]
-  }
-}
-```
-
-## Bundle Formats
-
-| Format              | Contents                        | Runtime           |
-|---------------------|---------------------------------|-------------------|
-| `Bundle::OciRuntime`| rootfs + config.json            | NativeRuntime      |
-| `Bundle::Wasm`      | .wasm module + WASI config      | WasmtimeRuntime   |
-| `Bundle::MicroVm`   | rootfs + command/env            | KrunRuntime       |
-
-## Platform Detection
+### OCI Runtime (Low-Level)
 
 ```rust
-use magikrun::{Platform, Capability};
+use magikrun::image::{ImageService, BundleBuilder, OciContainerConfig};
+use magikrun::runtime::{NativeRuntime, OciRuntime};
 
-let platform = Platform::detect();
-
-// Check OS and architecture
-println!("OS: {}, Arch: {}", platform.os, platform.arch);
-
-// Check available capabilities
-if platform.has_capability(Capability::Namespaces) {
-    println!("Linux containers available");
+#[tokio::main]
+async fn main() -> magikrun::Result<()> {
+    // CRI ImageService pattern
+    let image_service = ImageService::new()?;
+    let bundle_builder = BundleBuilder::with_storage(image_service.storage().clone())?;
+    
+    // Pull image
+    let image = image_service.pull("alpine:3.18").await?;
+    
+    // Build OCI bundle
+    let bundle = bundle_builder.build_oci_bundle(&image, &OciContainerConfig {
+        name: "my-container".to_string(),
+        command: Some(vec!["/bin/sh".to_string()]),
+        ..Default::default()
+    })?;
+    
+    // OCI lifecycle
+    let runtime = NativeRuntime::new();
+    runtime.create("my-container", bundle.path()).await?;
+    runtime.start("my-container").await?;
+    // ... later ...
+    runtime.kill("my-container", magikrun::runtime::Signal::Term).await?;
+    runtime.delete("my-container").await?;
+    
+    Ok(())
 }
-
-if platform.has_capability(Capability::Hypervisor) {
-    println!("MicroVM isolation available");
-}
-
-// WASM is always available
-assert!(platform.has_capability(Capability::WasmRuntime));
 ```
 
-## Content-Addressed Storage
+## Binaries
 
-The `BlobStore` provides secure, deduplicated storage for OCI layers:
+| Binary | Location | Purpose |
+|--------|----------|---------|
+| `magikrun` | Host | OCI runtime CLI, image management |
+| `vminit` | VM `/init` | Minimal init for MicroVMs (PID 1) |
 
-```rust
-use magikrun::BlobStore;
-use sha2::{Sha256, Digest};
+### vminit
 
-let store = BlobStore::new()?;
-
-// Store with automatic verification
-let data = b"layer content";
-let digest = format!("sha256:{}", hex::encode(Sha256::digest(data)));
-store.put_blob(&digest, data)?;
-
-// Retrieve
-let retrieved = store.get_blob(&digest)?;
-assert_eq!(retrieved, data);
-
-// Deduplication: same content = same digest = one copy on disk
-```
-
-### Storage Layout
-
-```
-~/.magikrun/blobs/
-└── sha256/
-    ├── ab/
-    │   ├── abcd1234...  (blob content)
-    │   └── ab9f8e7d...  (blob content)
-    └── cd/
-        └── cdef5678...  (blob content)
-```
-
-## Testing
+The `vminit` binary runs as PID 1 inside MicroVMs. It:
+- Reads baked pod spec from `/pod/spec.json`
+- Spawns containers using libcontainer
+- Reaps zombie processes
+- Forwards signals (SIGTERM, SIGINT) to containers
+- Handles TSI (exec/logs) requests via vsock
 
 ```bash
-# Run all tests
-cargo test
-
-# Run with verbose output
-cargo test -- --nocapture
-
-# Run specific test file
-cargo test --test storage_tests
+# Build static binary for VMs
+cargo build --release --bin vminit --target x86_64-unknown-linux-musl
 ```
 
-### Test Coverage
+## Platform Support
 
-- **130 tests** covering:
-  - Security-critical constants validation
-  - Error message formatting
-  - Platform detection logic
-  - Container state serialization (OCI spec compliance)
-  - Runtime registry and availability
-  - Blob storage operations
+| Capability | Linux | macOS | Windows | Detection |
+|------------|:-----:|:-----:|:-------:|-----------|
+| Native containers | ✅ | ❌ | ❌ | `/proc/self/ns/*` |
+| MicroVMs | ✅ (KVM) | ✅ (HVF) | ❌ | `/dev/kvm` or `kern.hv_support` |
+| WASM | ✅ | ✅ | ✅ | Always available |
+| cgroups v2 | ✅ | ❌ | ❌ | `/sys/fs/cgroup/cgroup.controllers` |
 
 ## Dependencies
 
 ### Core
-- `tokio` - Async runtime
+- `tokio` (1.x) - Async runtime
 - `async-trait` - Async trait definitions
 - `serde` / `serde_json` - Serialization
 
 ### OCI
-- `oci-spec` - OCI image manifest types
-- `oci-distribution` - Registry client
+- `oci-spec` (0.8) - OCI image manifest types
+- `oci-distribution` (0.11) - Registry client
 
 ### Runtimes
-- `wasmtime` / `wasmtime-wasi` - WASM execution (v27)
-- `krun-sys` - libkrun FFI bindings (v1.10)
-- `libcontainer` / `libcgroups` - youki runtime (Linux, cgroups v2)
+- `libcontainer` / `libcgroups` (0.4) - youki container runtime
+- `wasmtime` / `wasmtime-wasi` (27) - WASM execution
+- `krun-sys` (1.10) - libkrun FFI bindings
 
 ### Security
 - `sha2` / `hex` - Content-addressed hashing
-- `flate2` / `tar` - Layer extraction with bounds checking
+- `flate2` / `tar` - Bounded layer extraction
+
+## Testing
+
+```bash
+# Library tests only (fast)
+cargo test --lib
+
+# All tests including integration
+cargo test
+
+# With verbose output
+cargo test -- --nocapture
+```
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) for details.
 
-This project uses runtime backends (youki, wasmtime, libkrun) and OCI libraries that are also Apache-2.0 licensed.
-
 ## Related Projects
 
-- [`magikpod`](../magikpod) - Pod-level orchestration with namespace sharing
-- [`magik`](../magik) - Decentralized workload orchestration
-- [`korium`](../korium) - P2P mesh networking
+- [`magikpod`](../magikpod) - Pod orchestration with K8s manifest support
+- [`magik`](../magik) - Decentralized workload orchestration (machineplane + workplane)
+- [`korium`](../korium) - P2P mesh networking (Kademlia DHT, GossipSub, QUIC/mTLS)

@@ -3,8 +3,10 @@
 //! Tests the RuntimeRegistry and availability checks for
 //! NativeRuntime, WasmtimeRuntime, and KrunRuntime.
 
-use magikrun::runtimes::{KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime};
-use magikrun::{OciRuntime, Platform};
+use magikrun::image::Platform;
+use magikrun::runtime::{
+    KrunRuntime, NativeRuntime, OciRuntime, RuntimeRegistry, Signal, WasmtimeRuntime,
+};
 
 // =============================================================================
 // RuntimeRegistry Tests
@@ -247,7 +249,7 @@ async fn test_unavailable_runtime_operations_fail() {
     let result = native.state("test").await;
     assert!(result.is_err());
 
-    let result = native.kill("test", magikrun::Signal::Term, false).await;
+    let result = native.kill("test", Signal::Term, false).await;
     assert!(result.is_err());
 
     let result = native.delete("test", false).await;
@@ -289,7 +291,7 @@ async fn test_wasmtime_kill_nonexistent_container() {
 
     // Kill on nonexistent container should fail
     let result = runtime
-        .kill("nonexistent", magikrun::Signal::Term, false)
+        .kill("nonexistent", Signal::Term, false)
         .await;
     assert!(result.is_err());
 }

@@ -191,6 +191,17 @@ pub enum Error {
     Serialization(String),
 
     // =========================================================================
+    // Manifest/Validation Errors
+    // =========================================================================
+    /// Invalid input (manifest parsing, validation failures).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Pod manifest parsing failed.
+    #[error("failed to parse pod manifest: {0}")]
+    ManifestParseFailed(String),
+
+    // =========================================================================
     // FFI Errors
     // =========================================================================
     /// FFI call failed.

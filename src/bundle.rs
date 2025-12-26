@@ -83,6 +83,7 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use tracing::{debug, info};
@@ -224,20 +225,37 @@ pub struct BundleBuilder {
     /// Base directory for bundles.
     base_dir: PathBuf,
     /// Blob storage for layer access.
-    storage: BlobStore,
+    storage: Arc<BlobStore>,
 }
 
 impl BundleBuilder {
     /// Creates a new bundle builder.
     pub fn new() -> Result<Self> {
         let base_dir = Self::default_path();
-        Self::with_path(base_dir)
+        let storage = Arc::new(BlobStore::new()?);
+        Self::with_path_and_storage(base_dir, storage)
     }
 
     /// Creates a bundle builder with a specific base path.
     pub fn with_path(base_dir: PathBuf) -> Result<Self> {
+        let storage = Arc::new(BlobStore::new()?);
+        Self::with_path_and_storage(base_dir, storage)
+    }
+
+    /// Creates a bundle builder with external storage.
+    ///
+    /// This is the preferred constructor when using with [`ImageService`],
+    /// as it ensures consistent storage for both pulling and building.
+    ///
+    /// [`ImageService`]: crate::image::ImageService
+    pub fn with_storage(storage: Arc<BlobStore>) -> Result<Self> {
+        let base_dir = Self::default_path();
+        Self::with_path_and_storage(base_dir, storage)
+    }
+
+    /// Creates a bundle builder with specific path and storage.
+    pub fn with_path_and_storage(base_dir: PathBuf, storage: Arc<BlobStore>) -> Result<Self> {
         fs::create_dir_all(&base_dir).map_err(|e| Error::BundleBuildFailed(e.to_string()))?;
-        let storage = BlobStore::new()?;
         Ok(Self { base_dir, storage })
     }
 
@@ -483,6 +501,8 @@ impl BundleBuilder {
                     },
                 ],
                 resources: None,
+                // SECURITY: Restrict syscalls to reduce kernel attack surface
+                seccomp: Some(Self::default_seccomp()),
                 // SECURITY: Hide sensitive kernel interfaces
                 masked_paths: Self::default_masked_paths(),
                 // SECURITY: Prevent writes to sensitive proc entries
@@ -535,6 +555,245 @@ impl BundleBuilder {
             "/proc/sys".to_string(),
             "/proc/sysrq-trigger".to_string(),
         ]
+    }
+
+    /// Returns the default seccomp profile for containers.
+    ///
+    /// SECURITY: This is an allowlist-based profile that permits common syscalls
+    /// while blocking dangerous ones like `kexec_load`, `reboot`, `mount`, etc.
+    /// Based on Docker's default seccomp profile with modifications for minimal
+    /// container workloads.
+    fn default_seccomp() -> OciSeccomp {
+        OciSeccomp {
+            default_action: "SCMP_ACT_ERRNO".to_string(),
+            architectures: vec![
+                "SCMP_ARCH_X86_64".to_string(),
+                "SCMP_ARCH_AARCH64".to_string(),
+                "SCMP_ARCH_X86".to_string(),
+                "SCMP_ARCH_ARM".to_string(),
+            ],
+            syscalls: vec![
+                // SECURITY: Allowlist of common syscalls needed for typical workloads.
+                // This is conservative - most containerized apps need these.
+                OciSeccompSyscall {
+                    names: vec![
+                        // Process/thread management
+                        "exit".to_string(),
+                        "exit_group".to_string(),
+                        "futex".to_string(),
+                        "nanosleep".to_string(),
+                        "clock_nanosleep".to_string(),
+                        "sched_yield".to_string(),
+                        "getpid".to_string(),
+                        "gettid".to_string(),
+                        "getppid".to_string(),
+                        "getuid".to_string(),
+                        "geteuid".to_string(),
+                        "getgid".to_string(),
+                        "getegid".to_string(),
+                        "getgroups".to_string(),
+                        "setuid".to_string(),
+                        "setgid".to_string(),
+                        "setgroups".to_string(),
+                        "setsid".to_string(),
+                        "getpgid".to_string(),
+                        "setpgid".to_string(),
+                        "getpgrp".to_string(),
+                        "getsid".to_string(),
+                        "clone".to_string(),
+                        "clone3".to_string(),
+                        "fork".to_string(),
+                        "vfork".to_string(),
+                        "execve".to_string(),
+                        "execveat".to_string(),
+                        "wait4".to_string(),
+                        "waitid".to_string(),
+                        // File I/O
+                        "read".to_string(),
+                        "write".to_string(),
+                        "open".to_string(),
+                        "openat".to_string(),
+                        "openat2".to_string(),
+                        "close".to_string(),
+                        "close_range".to_string(),
+                        "lseek".to_string(),
+                        "pread64".to_string(),
+                        "pwrite64".to_string(),
+                        "readv".to_string(),
+                        "writev".to_string(),
+                        "preadv".to_string(),
+                        "pwritev".to_string(),
+                        "preadv2".to_string(),
+                        "pwritev2".to_string(),
+                        "dup".to_string(),
+                        "dup2".to_string(),
+                        "dup3".to_string(),
+                        "pipe".to_string(),
+                        "pipe2".to_string(),
+                        "select".to_string(),
+                        "pselect6".to_string(),
+                        "poll".to_string(),
+                        "ppoll".to_string(),
+                        "epoll_create".to_string(),
+                        "epoll_create1".to_string(),
+                        "epoll_ctl".to_string(),
+                        "epoll_wait".to_string(),
+                        "epoll_pwait".to_string(),
+                        "epoll_pwait2".to_string(),
+                        "eventfd".to_string(),
+                        "eventfd2".to_string(),
+                        "timerfd_create".to_string(),
+                        "timerfd_settime".to_string(),
+                        "timerfd_gettime".to_string(),
+                        "signalfd".to_string(),
+                        "signalfd4".to_string(),
+                        "fcntl".to_string(),
+                        "flock".to_string(),
+                        "fsync".to_string(),
+                        "fdatasync".to_string(),
+                        "sync".to_string(),
+                        "syncfs".to_string(),
+                        "ftruncate".to_string(),
+                        "truncate".to_string(),
+                        "stat".to_string(),
+                        "lstat".to_string(),
+                        "fstat".to_string(),
+                        "fstatat64".to_string(),
+                        "newfstatat".to_string(),
+                        "statx".to_string(),
+                        "statfs".to_string(),
+                        "fstatfs".to_string(),
+                        "access".to_string(),
+                        "faccessat".to_string(),
+                        "faccessat2".to_string(),
+                        "readlink".to_string(),
+                        "readlinkat".to_string(),
+                        "getcwd".to_string(),
+                        "chdir".to_string(),
+                        "fchdir".to_string(),
+                        "rename".to_string(),
+                        "renameat".to_string(),
+                        "renameat2".to_string(),
+                        "link".to_string(),
+                        "linkat".to_string(),
+                        "symlink".to_string(),
+                        "symlinkat".to_string(),
+                        "unlink".to_string(),
+                        "unlinkat".to_string(),
+                        "rmdir".to_string(),
+                        "mkdir".to_string(),
+                        "mkdirat".to_string(),
+                        "mknod".to_string(),
+                        "mknodat".to_string(),
+                        "chmod".to_string(),
+                        "fchmod".to_string(),
+                        "fchmodat".to_string(),
+                        "chown".to_string(),
+                        "fchown".to_string(),
+                        "fchownat".to_string(),
+                        "lchown".to_string(),
+                        "umask".to_string(),
+                        "getdents".to_string(),
+                        "getdents64".to_string(),
+                        "utimensat".to_string(),
+                        "futimesat".to_string(),
+                        "utime".to_string(),
+                        "utimes".to_string(),
+                        // Memory management
+                        "brk".to_string(),
+                        "mmap".to_string(),
+                        "mmap2".to_string(),
+                        "munmap".to_string(),
+                        "mremap".to_string(),
+                        "mprotect".to_string(),
+                        "madvise".to_string(),
+                        "mlock".to_string(),
+                        "mlock2".to_string(),
+                        "munlock".to_string(),
+                        "mlockall".to_string(),
+                        "munlockall".to_string(),
+                        "mincore".to_string(),
+                        "msync".to_string(),
+                        // Signals
+                        "rt_sigaction".to_string(),
+                        "rt_sigprocmask".to_string(),
+                        "rt_sigreturn".to_string(),
+                        "rt_sigsuspend".to_string(),
+                        "rt_sigpending".to_string(),
+                        "rt_sigtimedwait".to_string(),
+                        "rt_sigqueueinfo".to_string(),
+                        "kill".to_string(),
+                        "tgkill".to_string(),
+                        "tkill".to_string(),
+                        "sigaltstack".to_string(),
+                        // Networking
+                        "socket".to_string(),
+                        "socketpair".to_string(),
+                        "bind".to_string(),
+                        "listen".to_string(),
+                        "accept".to_string(),
+                        "accept4".to_string(),
+                        "connect".to_string(),
+                        "getsockname".to_string(),
+                        "getpeername".to_string(),
+                        "sendto".to_string(),
+                        "recvfrom".to_string(),
+                        "setsockopt".to_string(),
+                        "getsockopt".to_string(),
+                        "shutdown".to_string(),
+                        "sendmsg".to_string(),
+                        "recvmsg".to_string(),
+                        "sendmmsg".to_string(),
+                        "recvmmsg".to_string(),
+                        // Time
+                        "gettimeofday".to_string(),
+                        "clock_gettime".to_string(),
+                        "clock_getres".to_string(),
+                        "times".to_string(),
+                        // Resource limits
+                        "getrlimit".to_string(),
+                        "setrlimit".to_string(),
+                        "prlimit64".to_string(),
+                        "getrusage".to_string(),
+                        // System info
+                        "uname".to_string(),
+                        "sysinfo".to_string(),
+                        // IPC
+                        "shmget".to_string(),
+                        "shmat".to_string(),
+                        "shmctl".to_string(),
+                        "shmdt".to_string(),
+                        "semget".to_string(),
+                        "semop".to_string(),
+                        "semctl".to_string(),
+                        "semtimedop".to_string(),
+                        "msgget".to_string(),
+                        "msgsnd".to_string(),
+                        "msgrcv".to_string(),
+                        "msgctl".to_string(),
+                        // Misc
+                        "prctl".to_string(),
+                        "arch_prctl".to_string(),
+                        "set_tid_address".to_string(),
+                        "set_robust_list".to_string(),
+                        "get_robust_list".to_string(),
+                        "getrandom".to_string(),
+                        "ioctl".to_string(),
+                        "rseq".to_string(),
+                        "memfd_create".to_string(),
+                        "copy_file_range".to_string(),
+                        "splice".to_string(),
+                        "tee".to_string(),
+                        "vmsplice".to_string(),
+                        "sendfile".to_string(),
+                        "io_uring_setup".to_string(),
+                        "io_uring_enter".to_string(),
+                        "io_uring_register".to_string(),
+                    ],
+                    action: "SCMP_ACT_ALLOW".to_string(),
+                },
+            ],
+        }
     }
 
     /// Returns default OCI mounts.
@@ -727,6 +986,10 @@ pub struct OciLinux {
     pub namespaces: Vec<OciNamespace>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<OciResources>,
+    /// Seccomp syscall filtering profile.
+    /// SECURITY: Reduces kernel attack surface by restricting available syscalls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seccomp: Option<OciSeccomp>,
     /// Paths to mask from the container (appear empty/inaccessible).
     /// SECURITY: Hides sensitive kernel interfaces.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -799,6 +1062,33 @@ pub struct OciCapabilities {
     /// Capabilities in the ambient set (inherited across execve).
     #[serde(default)]
     pub ambient: Vec<String>,
+}
+
+/// OCI seccomp profile for syscall filtering.
+///
+/// SECURITY: Restricts which syscalls a container can invoke.
+/// This provides defense-in-depth by reducing the kernel attack surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OciSeccomp {
+    /// Default action when no rule matches.
+    /// SECURITY: Should be SCMP_ACT_ERRNO for deny-by-default profiles.
+    pub default_action: String,
+    /// Architectures this profile applies to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub architectures: Vec<String>,
+    /// Syscall rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syscalls: Vec<OciSeccompSyscall>,
+}
+
+/// Individual syscall rule in a seccomp profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OciSeccompSyscall {
+    /// Names of syscalls this rule applies to.
+    pub names: Vec<String>,
+    /// Action to take when syscall is invoked.
+    pub action: String,
 }
 
 // =============================================================================
@@ -934,35 +1224,71 @@ pub fn extract_layers_to_rootfs(
                 && let Ok(Some(target)) = entry.link_name()
             {
                 let target_str = target.to_string_lossy();
-                // Absolute symlinks that escape or relative paths with .. are dangerous
+
+                // SECURITY: Reject targets with null bytes (injection attack)
+                if target_str.contains('\0') {
+                    return Err(Error::PathTraversal {
+                        path: format!("symlink target contains null byte: {}", path.display()),
+                    });
+                }
+
                 if target_str.starts_with('/') {
-                    // Absolute paths are relative to rootfs, but must not contain ..
+                    // Absolute symlink: will be resolved relative to rootfs by tar
+                    // But we MUST reject any path traversal attempts
                     if target_str.contains("..") {
                         return Err(Error::PathTraversal {
-                            path: format!("symlink target: {}", target_str),
+                            path: format!("absolute symlink target contains '..': {}", target_str),
                         });
                     }
+                    // Note: Absolute paths like "/etc/passwd" are OK because tar's
+                    // unpack_in() anchors them to the rootfs. They become rootfs/etc/passwd.
                 } else {
                     // Relative symlink: resolve against entry's parent directory
                     let entry_parent = path.parent().unwrap_or(Path::new(""));
-                    let resolved = entry_parent.join(&*target);
-                    let resolved_str = resolved.to_string_lossy();
-                    // Check if resolved path escapes via ..
-                    if resolved_str.contains("..") {
-                        // Normalize and check if it stays within bounds
-                        let mut depth: i32 = 0;
-                        for component in resolved.components() {
-                            match component {
-                                std::path::Component::ParentDir => depth -= 1,
-                                std::path::Component::Normal(_) => depth += 1,
-                                _ => {}
-                            }
-                            if depth < 0 {
-                                return Err(Error::PathTraversal {
-                                    path: format!("symlink target escapes rootfs: {}", target_str),
-                                });
-                            }
+
+                    // Normalize the path and check if it escapes rootfs
+                    // We track depth: going up (..) decreases, going down (Normal) increases
+                    // If depth ever goes negative, we've escaped the rootfs
+                    let mut depth: i32 = 0;
+
+                    // First, count depth from entry's parent
+                    for component in entry_parent.components() {
+                        if let std::path::Component::Normal(_) = component {
+                            depth += 1;
                         }
+                    }
+
+                    // Then apply target's components
+                    for component in target.components() {
+                        match component {
+                            std::path::Component::ParentDir => {
+                                depth -= 1;
+                                if depth < 0 {
+                                    return Err(Error::PathTraversal {
+                                        path: format!(
+                                            "symlink '{}' escapes rootfs via target '{}'",
+                                            path.display(),
+                                            target_str
+                                        ),
+                                    });
+                                }
+                            }
+                            std::path::Component::Normal(_) => depth += 1,
+                            _ => {}
+                        }
+                    }
+                }
+
+                // SECURITY: For hardlinks, also verify the target file exists within rootfs
+                // (hardlinks can only point to existing files, but a malicious archive
+                // could reference files created earlier in the same archive)
+                if entry_type.is_hard_link() && target_str.starts_with('/') {
+                    // Absolute hardlink target - verify it's within rootfs bounds
+                    let target_in_rootfs = rootfs.join(target_str.trim_start_matches('/'));
+                    if !target_in_rootfs.starts_with(rootfs) {
+                        return Err(Error::PathTraversal {
+                            path: format!("hardlink target escapes rootfs: {}", target_str),
+                        });
                     }
                 }
             }

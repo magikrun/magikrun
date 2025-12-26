@@ -84,12 +84,23 @@ pub const MAX_FILES_PER_LAYER: usize = 100_000;
 ///
 /// **Security**: Prevents memory exhaustion from parsing malformed manifests.
 /// Standard OCI manifests are typically under 100 KiB.
+///
+/// **Note**: Currently reserved. The `oci_distribution` crate parses manifests
+/// internally without exposing raw bytes. This constant documents the intended
+/// limit for when a custom registry client is implemented or the upstream API
+/// allows pre-parse validation.
+#[allow(dead_code)]
 pub const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
 
 /// Maximum config blob size (1 MiB).
 ///
 /// **Security**: Prevents memory exhaustion from oversized image configs.
 /// Standard configs are typically under 50 KiB.
+///
+/// **Note**: Currently reserved. The `oci_distribution` crate handles config
+/// blob fetching internally. This constant documents the intended limit for
+/// when custom validation is possible.
+#[allow(dead_code)]
 pub const MAX_CONFIG_SIZE: usize = 1024 * 1024;
 
 /// Maximum number of concurrent containers per runtime.

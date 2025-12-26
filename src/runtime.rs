@@ -1,8 +1,11 @@
 //! # OCI Runtime Trait - Pure OCI Runtime Spec Compliant Interface
 //!
-//! This module defines the [`OciRuntime`] trait, which provides a standard
-//! interface for container lifecycle operations per the
-//! [OCI Runtime Spec](https://github.com/opencontainers/runtime-spec).
+//! This is the **runtime facade module** for magikrun, providing:
+//!
+//! - **OciRuntime trait**: Standard container lifecycle (create/start/kill/delete)
+//! - **ContainerState/ContainerStatus**: Container state machine types
+//! - **Signal**: POSIX signals for container processes
+//! - **Runtime implementations**: NativeRuntime, WasmtimeRuntime, KrunRuntime
 //!
 //! ## Operations
 //!
@@ -20,19 +23,19 @@
 //!
 //! ```text
 //!                         create()
-//!     ┌─────────────────────────────────────────────────────────┐
-//!     │                                                         │
-//!     ▼                        start()                          │
-//!   ┌───────────┐                                ┌───────────┐         │
-//!   │  Creating  │ ───────► ┌─────────┐ ───────► │  Running  │         │
-//!   └───────────┘          │ Created │          └─────┬─────┘         │
-//!                          └────┬────┘                │               │
-//!                               │                     │ kill()        │
-//!                               │ delete()            │               │
-//!                               │ (if created)        ▼               │
-//!                               │              ┌───────────┐           │
-//!                               └────────────► │  Stopped  │ ──────────┘
-//!                                delete()    └───────────┘
+//!     ┌─────────────────────────────────────────────────────────────┐
+//!     │                                                             │
+//!     ▼                        start()                              │
+//!   ┌───────────┐                                ┌───────────┐      │
+//!   │  Creating  │ ───────► ┌─────────┐ ───────► │  Running  │      │
+//!   └───────────┘           │ Created │          └─────┬─────┘      │
+//!                           └────┬────┘                │            │
+//!                                │                     │ kill()     │
+//!                                │ delete()            │            │
+//!                                │ (if created)        ▼            │
+//!                                │              ┌───────────┐       │
+//!                                └────────────► │  Stopped  │ ──────┘
+//!                                 delete()      └───────────┘
 //! ```
 //!
 //! ## No Pod Semantics
@@ -63,23 +66,51 @@
 //!
 //! ## Implementations
 //!
-//! This crate provides three implementations:
+//! This crate provides four implementations:
 //!
-//! | Runtime          | Platform       | Isolation          | Use Case            |
-//! |------------------|----------------|--------------------|-----------------    |
-//! | [`NativeRuntime`] | Linux only     | Namespaces+cgroups | Production containers|
-//! | [`WasmtimeRuntime`] | Cross-platform | WASM sandbox    | Portable plugins    |
-//! | [`KrunRuntime`]  | Linux/macOS    | Hardware VM        | Untrusted workloads |
-//!
-//! [`NativeRuntime`]: crate::runtimes::NativeRuntime
-//! [`WasmtimeRuntime`]: crate::runtimes::WasmtimeRuntime
-//! [`KrunRuntime`]: crate::runtimes::KrunRuntime
+//! | Runtime            | Platform       | Isolation          | Use Case            |
+//! |--------------------|----------------|--------------------|---------------------|
+//! | [`NativeRuntime`]  | Linux only     | Namespaces+cgroups | Production containers|
+//! | [`WasmtimeRuntime`]| Cross-platform | WASM sandbox       | Portable plugins    |
+//! | [`KrunRuntime`]    | Linux/macOS    | Hardware VM        | Untrusted workloads |
+//! | [`WindowsRuntime`] | Windows only   | WSL2 MicroVM       | Linux on Windows    |
 
-use crate::error::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+
+// =============================================================================
+// Re-exports (unified runtime API surface)
+// =============================================================================
+
+// Error types
+pub use crate::error::{Error, Result};
+
+// Runtime implementations
+pub use crate::runtimes::{
+    KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime,
+};
+
+// Security constants for runtime configuration (public API for consumers)
+pub use crate::constants::{
+    // Timeouts
+    CONTAINER_START_TIMEOUT, DEFAULT_GRACE_PERIOD, EXEC_TIMEOUT,
+    // Container resource limits
+    DEFAULT_CPU_SHARES, DEFAULT_MEMORY_BYTES, MAX_CONTAINERS, MAX_MEMORY_BYTES, MAX_PIDS,
+    // MicroVM limits
+    DEFAULT_VCPUS, DEFAULT_VM_MEMORY_MIB, MAX_VCPUS, MAX_VM_MEMORY_MIB,
+    // WASM limits
+    DEFAULT_WASM_FUEL, MAX_WASM_MODULE_SIZE, MAX_WASM_MEMORY_PAGES,
+    // OCI spec version
+    OCI_RUNTIME_SPEC_VERSION,
+    // Container ID validation
+    CONTAINER_NAME_VALID_CHARS, MAX_CONTAINER_ID_LEN,
+    // Storage paths
+    CONTAINER_STATE_DIR, VM_STATE_DIR,
+    // Validation helper
+    validate_container_id,
+};
 
 // =============================================================================
 // Container State (OCI Runtime Spec)

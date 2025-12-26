@@ -149,19 +149,21 @@ pub struct LayerInfo {
 /// | Basic auth | [`RegistryClient::with_auth`] |
 ///
 /// For OAuth/bearer tokens (e.g., GCR, ECR), extend this struct.
+///
+/// ## Status
+///
+/// This struct is defined for future authenticated registry operations.
+/// Currently, `pull_image` uses anonymous auth directly. This will be wired
+/// up when ImageService supports authenticated pulls.
+#[allow(dead_code)] // Reserved for authenticated registry operations
 pub struct RegistryClient {
     /// The underlying OCI distribution client.
-    ///
-    /// Reserved for future direct registry operations (e.g., push, catalog).
-    #[allow(dead_code)] // Reserved for future authenticated registry operations
     client: Client,
     /// Authentication configuration for registry access.
-    ///
-    /// Reserved for future direct registry operations.
-    #[allow(dead_code)] // Reserved for future authenticated registry operations
     auth: RegistryAuth,
 }
 
+#[allow(dead_code)] // Reserved for authenticated registry operations
 impl RegistryClient {
     /// Creates a new registry client with anonymous auth.
     pub fn new() -> Self {
@@ -320,6 +322,9 @@ pub async fn pull_image(image_ref: &str, storage: &Arc<BlobStore>) -> Result<Ima
             });
         }
 
+        // SECURITY: Track in-flight to protect from GC during download
+        storage.track_inflight(&layer.digest);
+
         let layer_desc = oci_distribution::manifest::OciDescriptor {
             digest: layer.digest.clone(),
             size: layer.size as i64,
@@ -329,21 +334,200 @@ pub async fn pull_image(image_ref: &str, storage: &Arc<BlobStore>) -> Result<Ima
         };
 
         let mut data = Vec::new();
-        tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
+        let pull_result = tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
             client.pull_blob(&reference, &layer_desc, &mut data).await
         })
-        .await
-        .map_err(|_| Error::Timeout {
-            operation: format!("pull layer {}", layer.digest),
-            duration: IMAGE_PULL_TIMEOUT,
-        })?
-        .map_err(|e| Error::LayerExtractionFailed {
-            digest: layer.digest.clone(),
-            reason: e.to_string(),
+        .await;
+
+        // Handle timeout
+        if pull_result.is_err() {
+            storage.untrack_inflight(&layer.digest);
+            return Err(Error::Timeout {
+                operation: format!("pull layer {}", layer.digest),
+                duration: IMAGE_PULL_TIMEOUT,
+            });
+        }
+
+        // Handle pull error
+        if let Err(e) = pull_result.unwrap() {
+            storage.untrack_inflight(&layer.digest);
+            return Err(Error::LayerExtractionFailed {
+                digest: layer.digest.clone(),
+                reason: e.to_string(),
+            });
+        }
+
+        // Store in blob store and untrack
+        let store_result = storage.put_blob(&layer.digest, &data);
+        storage.untrack_inflight(&layer.digest);
+        store_result?;
+    }
+
+    Ok(ImageHandle {
+        reference: image_ref.to_string(),
+        digest,
+        platform: resolved_platform,
+        layers,
+        config_digest,
+    })
+}
+
+/// Pulls a container image for a specific target platform.
+///
+/// This is useful for MicroVM scenarios where the host is macOS but the
+/// target VM runs Linux. The platform can be specified explicitly.
+///
+/// ## Arguments
+///
+/// * `image_ref` - Image reference (e.g., "nginx:latest")
+/// * `storage` - Blob storage for layer caching
+/// * `target_platform` - Target platform (e.g., Linux/arm64)
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// use magikrun::platform::{Platform, Os, Arch};
+///
+/// let storage = Arc::new(BlobStore::new()?);
+/// let linux_platform = Platform {
+///     os: Os::Linux,
+///     arch: Arch::Arm64,
+///     capabilities: vec![],
+/// };
+/// let image = pull_image_for_platform("nginx:latest", &storage, &linux_platform).await?;
+/// ```
+pub async fn pull_image_for_platform(
+    image_ref: &str,
+    storage: &Arc<BlobStore>,
+    target_platform: &Platform,
+) -> Result<ImageHandle> {
+    // Validate reference length
+    if image_ref.len() > MAX_IMAGE_REF_LEN {
+        return Err(Error::InvalidImageReference {
+            reference: image_ref.to_string(),
+            reason: format!("exceeds {} bytes", MAX_IMAGE_REF_LEN),
+        });
+    }
+
+    // Validate reference characters
+    if !image_ref.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c == '/'
+            || c == ':'
+            || c == '.'
+            || c == '-'
+            || c == '_'
+            || c == '@'
+    }) {
+        return Err(Error::InvalidImageReference {
+            reference: image_ref.to_string(),
+            reason: "contains invalid characters".to_string(),
+        });
+    }
+
+    info!(
+        "Pulling image {} for platform {}",
+        image_ref,
+        target_platform.oci_platform()
+    );
+
+    // Parse reference
+    let reference: Reference = image_ref
+        .parse()
+        .map_err(|e| Error::InvalidImageReference {
+            reference: image_ref.to_string(),
+            reason: format!("{}", e),
         })?;
 
-        // Store in blob store
-        storage.put_blob(&layer.digest, &data)?;
+    // Create client
+    let client = Client::new(ClientConfig {
+        protocol: ClientProtocol::Https,
+        ..Default::default()
+    });
+
+    let auth = RegistryAuth::Anonymous;
+
+    // Pull manifest with timeout
+    let (manifest, digest) = tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
+        client.pull_manifest(&reference, &auth).await
+    })
+    .await
+    .map_err(|_| Error::Timeout {
+        operation: format!("pull manifest for {}", image_ref),
+        duration: IMAGE_PULL_TIMEOUT,
+    })?
+    .map_err(|e| Error::ImagePullFailed {
+        reference: image_ref.to_string(),
+        reason: e.to_string(),
+    })?;
+
+    // Resolve multi-arch manifests for the specified platform
+    let (layers, config_digest, resolved_platform) =
+        resolve_manifest(&client, &reference, &auth, manifest, target_platform).await?;
+
+    // Validate layer count
+    if layers.len() > MAX_LAYERS {
+        return Err(Error::ImagePullFailed {
+            reference: image_ref.to_string(),
+            reason: format!("too many layers: {} > {}", layers.len(), MAX_LAYERS),
+        });
+    }
+
+    // Pull layers
+    for layer in &layers {
+        if storage.has_blob(&layer.digest) {
+            debug!("Layer {} already cached", layer.digest);
+            continue;
+        }
+
+        debug!("Pulling layer: {} ({} bytes)", layer.digest, layer.size);
+
+        if layer.size > MAX_LAYER_SIZE as u64 {
+            return Err(Error::ImageTooLarge {
+                size: layer.size,
+                limit: MAX_LAYER_SIZE as u64,
+            });
+        }
+
+        // SECURITY: Track in-flight to protect from GC during download
+        storage.track_inflight(&layer.digest);
+
+        let layer_desc = oci_distribution::manifest::OciDescriptor {
+            digest: layer.digest.clone(),
+            size: layer.size as i64,
+            media_type: layer.media_type.clone(),
+            urls: None,
+            annotations: None,
+        };
+
+        let mut data = Vec::new();
+        let pull_result = tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
+            client.pull_blob(&reference, &layer_desc, &mut data).await
+        })
+        .await;
+
+        // Handle timeout
+        if pull_result.is_err() {
+            storage.untrack_inflight(&layer.digest);
+            return Err(Error::Timeout {
+                operation: format!("pull layer {}", layer.digest),
+                duration: IMAGE_PULL_TIMEOUT,
+            });
+        }
+
+        // Handle pull error
+        if let Err(e) = pull_result.unwrap() {
+            storage.untrack_inflight(&layer.digest);
+            return Err(Error::LayerExtractionFailed {
+                digest: layer.digest.clone(),
+                reason: e.to_string(),
+            });
+        }
+
+        // Store in blob store and untrack
+        let store_result = storage.put_blob(&layer.digest, &data);
+        storage.untrack_inflight(&layer.digest);
+        store_result?;
     }
 
     Ok(ImageHandle {
