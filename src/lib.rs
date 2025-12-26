@@ -6,7 +6,16 @@
 //! container operations across heterogeneous isolation backends. It handles
 //! single-container operations only - pod semantics (shared namespaces,
 //! pause containers) are delegated to the higher-level `magikpod` crate.
-//!
+
+// =============================================================================
+// Safety Hygiene
+// =============================================================================
+//
+// Require explicit unsafe blocks within unsafe functions. This ensures all
+// unsafe operations have localized SAFETY comments explaining invariants.
+// =============================================================================
+#![deny(unsafe_op_in_unsafe_fn)]
+
 //! # Architecture Overview
 //!
 //! ```text
@@ -74,7 +83,12 @@
 //! ## Key Security Properties
 //!
 //! - **Path Traversal Protection**: All tar extraction validates paths against
-//!   `..` components and absolute paths.
+//!   `..` components and absolute paths. Symlinks and hardlinks use depth-tracking
+//!   to ensure targets stay within rootfs.
+//! - **Link Target Validation**: Both symlinks and hardlinks are validated with
+//!   the same depth-tracking algorithm. Null bytes in link targets are rejected.
+//! - **TOCTOU-Safe Whiteouts**: Whiteout handling uses `symlink_metadata()` to
+//!   prevent race conditions during layer extraction.
 //! - **Size Limits**: Bounded constants prevent resource exhaustion:
 //!   - `MAX_LAYER_SIZE`: 512 MiB per layer
 //!   - `MAX_ROOTFS_SIZE`: 4 GiB total
@@ -83,6 +97,7 @@
 //!   storing blobs (see [`storage::BlobStore::put_blob`]).
 //! - **Fuel Limits**: WASM execution bounded by `DEFAULT_WASM_FUEL` (1B ops).
 //! - **Timeouts**: All network operations bounded by `IMAGE_PULL_TIMEOUT` (5 min).
+//! - **Container Limits**: `MAX_CONTAINERS` (1024) prevents unbounded state growth.
 //!
 //! # No Pod Semantics
 //!
@@ -165,7 +180,7 @@ pub mod image;
 ///
 /// Provides: `OciRuntime`, `ContainerState`, `ContainerStatus`, `Signal`,
 /// `NativeRuntime`, `WasmtimeRuntime`, `KrunRuntime` (Linux/macOS),
-/// `WindowsRuntime` (Windows), `RuntimeRegistry`, `Error`, `Result`
+/// `RuntimeRegistry`, `Error`, `Result`
 pub mod runtime;
 
 /// Pod Runtime Interface (PRI) - atomic pod lifecycle.
@@ -187,12 +202,12 @@ pub mod runtime;
 /// ## Internal: TSI Protocol
 ///
 /// The TSI (Transparent Socket Interface) for MicroVM communication is
-/// internal to this module. It provides vsock-based exec/logs operations
-/// for containers running inside VMs. Pod lifecycle is handled by vminit
-/// reading baked specs - TSI only handles Day-2 operations.
+/// internal to this module. It provides TCP-based exec/logs operations
+/// for containers running inside VMs (via passt networking). Pod lifecycle
+/// is handled by vminit reading baked specs - TSI only handles Day-2 operations.
 pub mod pod;
 
-/// Infra framework for infrastructure containers/inits.
+/// Infra-container framework for infrastructure containers/inits.
 ///
 /// Provides the core framework for the `vminit` binary and extensions
 /// like workplane. Runs inside pods as the infra-container:
@@ -206,9 +221,29 @@ pub mod pod;
 /// - `InfraExtension`: Trait for extending infra behavior (implemented by workplane)
 /// - `InfraEvent`: Container lifecycle events
 /// - `InfraContext`: Context passed to extensions
+/// - `PortRequest`, `PortProtocol`: Dynamic port mapping via passt
 ///
 /// ## Symmetric Design
 ///
 /// The same infra-container code runs identically in both native and MicroVM
 /// modes. The only difference is the outer environment (host vs VM).
-pub mod infra;
+pub mod infracontainer;
+
+/// passt integration for MicroVM networking.
+///
+/// Provides TCP/UDP/ICMP networking for MicroVMs using passt:
+///
+/// - **TCP**: Control channel (exec/logs via TSI protocol)
+/// - **UDP**: Korium mesh networking (used by workplane)
+/// - **ICMP**: Health probes (ping)
+///
+/// This module provides:
+/// - `PasstConfig`: Port mapping configuration
+/// - `PasstInstance`: Running passt process management
+/// - `ControlClient`: Lightweight client for exec/logs operations
+///
+/// ## External Usage
+///
+/// Workplane uses this module to publish Korium sockets via passt
+/// when implementing `InfraExtension`.
+pub mod passt;

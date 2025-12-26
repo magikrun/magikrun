@@ -9,7 +9,6 @@
 //! | Runtime           | Platform     | Isolation       | Availability      |
 //! |-------------------|--------------|-----------------|-------------------|
 //! | [`NativeRuntime`] | Linux only   | Namespaces/cgroups | Requires root/caps |
-//! | [`WindowsRuntime`]| Windows only | WSL2 MicroVM    | Requires WSL2    |
 //! | [`WasmtimeRuntime`]| All platforms| WASM sandbox    | Always available  |
 //! | [`KrunRuntime`]   | Linux/macOS  | Hardware VM     | Requires hypervisor|
 //!
@@ -42,15 +41,13 @@
 //! Isolation Strength:
 //!
 //!   KrunRuntime     ██████████  Hardware VM (strongest)
-//!   WindowsRuntime  ████████    WSL2 MicroVM (Hyper-V isolation)
 //!   NativeRuntime   ███████     Linux namespaces/cgroups
 //!   WasmtimeRuntime ████        WASM sandbox (weakest, but portable)
 //! ```
 //!
 //! For untrusted workloads, prefer `KrunRuntime`. For trusted internal
 //! services, `NativeRuntime` provides better performance. For portable
-//! plugins, `WasmtimeRuntime` works everywhere. On Windows, use
-//! `WindowsRuntime` for Linux container compatibility.
+//! plugins, `WasmtimeRuntime` works everywhere.
 //!
 //! ## Implementation Notes
 //!
@@ -65,12 +62,10 @@
 pub mod krun;
 pub mod native;
 pub mod wasmtime;
-pub mod windows;
 
 pub use self::krun::KrunRuntime;
 pub use self::native::NativeRuntime;
 pub use self::wasmtime::WasmtimeRuntime;
-pub use self::windows::WindowsRuntime;
 
 use crate::error::Result;
 use crate::platform::Platform;
@@ -88,8 +83,7 @@ use std::sync::Arc;
 /// Runtimes are registered in this order:
 /// 1. `wasmtime` - Always available (pure Rust)
 /// 2. `native` - Linux only, requires namespaces/cgroups
-/// 3. `windows` - Windows only, requires WSL2
-/// 4. `krun` - Requires hypervisor (KVM/HVF)
+/// 3. `krun` - Requires hypervisor (KVM/HVF)
 ///
 /// ## Example
 ///
@@ -100,7 +94,6 @@ use std::sync::Arc;
 /// // Prefer hardware VM, fall back to containers, then WASM
 /// let runtime = registry.get("krun")
 ///     .or_else(|| registry.get("native"))
-///     .or_else(|| registry.get("windows"))
 ///     .or_else(|| registry.get("wasmtime"))
 ///     .expect("wasmtime always available");
 /// ```
@@ -121,14 +114,6 @@ impl RuntimeRegistry {
         #[cfg(target_os = "linux")]
         {
             runtimes.push(Arc::new(NativeRuntime::new()));
-        }
-
-        // Add windows runtime on Windows if WSL2 is available
-        #[cfg(target_os = "windows")]
-        {
-            if platform.has_wsl2() {
-                runtimes.push(Arc::new(WindowsRuntime::new()));
-            }
         }
 
         // Add krun if hypervisor is available

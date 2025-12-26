@@ -68,10 +68,6 @@ mod spec;
 mod state;
 mod traits;
 
-// TSI protocol for MicroVM communication (internal)
-#[cfg(not(target_os = "windows"))]
-pub(crate) mod tsi;
-
 use std::path::PathBuf;
 
 /// Returns the platform-appropriate base directory for pod runtime state.

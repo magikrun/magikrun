@@ -15,9 +15,13 @@ use std::collections::HashMap;
 // =============================================================================
 // Constants for Manifest Validation
 // =============================================================================
+//
+// Pod-specific constants are defined here. Container runtime constants are
+// imported from the central constants module to maintain a single source of truth.
+// =============================================================================
 
-/// Maximum size of a pod manifest in bytes (1 MiB).
-pub const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
+// Re-export shared constant for manifest size
+pub use crate::constants::MAX_MANIFEST_SIZE;
 
 /// Maximum number of pods per runtime instance.
 pub const MAX_PODS: usize = 1024;

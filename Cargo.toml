@@ -1,6 +1,6 @@
 [package]
 name = "magikrun"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Unified OCI runtime for containers, WebAssembly, and microVMs"
 license = "Apache-2.0"
@@ -69,14 +69,9 @@ libcgroups = { version = "0.5", default-features = false, features = ["v2"] }
 anyhow = "1"
 tokio = { version = "1", features = ["signal"] }
 
-# libkrun for microVM isolation (Linux and macOS only, not Windows)
-[target.'cfg(not(target_os = "windows"))'.dependencies]
+# libkrun for microVM isolation (Linux and macOS only)
+[target.'cfg(unix)'.dependencies]
 krun-sys = "1.10"
-tokio-vsock = "0.6"
-
-# Windows runtime support (Windows only)
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects"] }
 
 [dev-dependencies]
 tempfile = "3"

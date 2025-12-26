@@ -102,7 +102,6 @@ pub struct Platform {
 pub enum Os {
     Linux,
     Darwin,
-    Windows,
     Unknown,
 }
 
@@ -128,7 +127,6 @@ pub enum Arch {
 /// - `Namespaces` may require root/CAP_SYS_ADMIN
 /// - `Cgroups` may require cgroup v2 unified hierarchy
 /// - `Hypervisor` may require KVM module loaded with access
-/// - `Wsl2` may require Windows 10+ with WSL2 enabled
 ///
 /// Runtime constructors perform additional validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -141,8 +139,6 @@ pub enum Capability {
     Seccomp,
     /// Hardware virtualization (KVM on Linux, HVF on macOS)
     Hypervisor,
-    /// Windows Subsystem for Linux 2 (WSL2)
-    Wsl2,
     /// WASM runtime available (always true - wasmtime is pure Rust)
     WasmRuntime,
 }
@@ -171,10 +167,7 @@ impl Platform {
         #[cfg(target_os = "macos")]
         return Os::Darwin;
 
-        #[cfg(target_os = "windows")]
-        return Os::Windows;
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Os::Unknown;
     }
 
@@ -248,13 +241,6 @@ impl Platform {
                 }
                 // macOS has no namespace/cgroup support
             }
-            Os::Windows => {
-                // Check for WSL2
-                if Self::check_wsl2() {
-                    caps.insert(Capability::Wsl2);
-                }
-                // Windows has no native namespace/cgroup/hypervisor support for containers
-            }
             _ => {
                 // Other platforms: minimal capabilities
             }
@@ -311,31 +297,6 @@ impl Platform {
         false
     }
 
-    /// Checks if WSL2 is available on Windows.
-    #[cfg(target_os = "windows")]
-    fn check_wsl2() -> bool {
-        use std::process::Command;
-
-        // Try to run wsl --status to check if WSL2 is available
-        match Command::new("wsl.exe").args(["--status"]).output() {
-            Ok(output) => {
-                if output.status.success() {
-                    // Check if it's WSL2 (not WSL1)
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    stdout.contains("2") || stdout.to_lowercase().contains("wsl 2")
-                } else {
-                    false
-                }
-            }
-            Err(_) => false,
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn check_wsl2() -> bool {
-        false
-    }
-
     /// Returns true if native Linux containers are supported.
     pub fn supports_native_containers(&self) -> bool {
         self.capabilities.contains(&Capability::Namespaces)
@@ -347,17 +308,11 @@ impl Platform {
         self.capabilities.contains(&Capability::Hypervisor)
     }
 
-    /// Returns true if WSL2 is available (Windows only).
-    pub fn has_wsl2(&self) -> bool {
-        self.capabilities.contains(&Capability::Wsl2)
-    }
-
     /// Returns the OCI platform string (e.g., "linux/amd64").
     pub fn oci_platform(&self) -> String {
         let os = match self.os {
             Os::Linux => "linux",
             Os::Darwin => "darwin",
-            Os::Windows => "windows",
             Os::Unknown => "unknown",
         };
 

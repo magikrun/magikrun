@@ -302,3 +302,112 @@ async fn test_wasmtime_delete_nonexistent_container() {
     let result = runtime.delete("nonexistent", false).await;
     assert!(result.is_err());
 }
+
+// =============================================================================
+// Signal Parsing Tests
+// =============================================================================
+
+#[test]
+fn test_signal_from_str_term() {
+    use std::str::FromStr;
+
+    // Various forms of SIGTERM
+    assert_eq!(Signal::from_str("SIGTERM").unwrap(), Signal::Term);
+    assert_eq!(Signal::from_str("TERM").unwrap(), Signal::Term);
+    assert_eq!(Signal::from_str("sigterm").unwrap(), Signal::Term);
+    assert_eq!(Signal::from_str("term").unwrap(), Signal::Term);
+    assert_eq!(Signal::from_str("15").unwrap(), Signal::Term);
+}
+
+#[test]
+fn test_signal_from_str_kill() {
+    use std::str::FromStr;
+
+    // Various forms of SIGKILL
+    assert_eq!(Signal::from_str("SIGKILL").unwrap(), Signal::Kill);
+    assert_eq!(Signal::from_str("KILL").unwrap(), Signal::Kill);
+    assert_eq!(Signal::from_str("sigkill").unwrap(), Signal::Kill);
+    assert_eq!(Signal::from_str("kill").unwrap(), Signal::Kill);
+    assert_eq!(Signal::from_str("9").unwrap(), Signal::Kill);
+}
+
+#[test]
+fn test_signal_from_str_hup() {
+    use std::str::FromStr;
+
+    assert_eq!(Signal::from_str("SIGHUP").unwrap(), Signal::Hup);
+    assert_eq!(Signal::from_str("HUP").unwrap(), Signal::Hup);
+    assert_eq!(Signal::from_str("1").unwrap(), Signal::Hup);
+}
+
+#[test]
+fn test_signal_from_str_int() {
+    use std::str::FromStr;
+
+    assert_eq!(Signal::from_str("SIGINT").unwrap(), Signal::Int);
+    assert_eq!(Signal::from_str("INT").unwrap(), Signal::Int);
+    assert_eq!(Signal::from_str("2").unwrap(), Signal::Int);
+}
+
+#[test]
+fn test_signal_from_str_usr1_usr2() {
+    use std::str::FromStr;
+
+    assert_eq!(Signal::from_str("SIGUSR1").unwrap(), Signal::Usr1);
+    assert_eq!(Signal::from_str("USR1").unwrap(), Signal::Usr1);
+    assert_eq!(Signal::from_str("10").unwrap(), Signal::Usr1);
+
+    assert_eq!(Signal::from_str("SIGUSR2").unwrap(), Signal::Usr2);
+    assert_eq!(Signal::from_str("USR2").unwrap(), Signal::Usr2);
+    assert_eq!(Signal::from_str("12").unwrap(), Signal::Usr2);
+}
+
+#[test]
+fn test_signal_from_str_invalid() {
+    use std::str::FromStr;
+
+    // Invalid signal names
+    assert!(Signal::from_str("SIGFOO").is_err());
+    assert!(Signal::from_str("FOO").is_err());
+    assert!(Signal::from_str("999").is_err());
+    assert!(Signal::from_str("").is_err());
+    assert!(Signal::from_str("SIGKILLTERM").is_err());
+    assert!(Signal::from_str("-1").is_err());
+}
+
+#[test]
+fn test_signal_display() {
+    assert_eq!(format!("{}", Signal::Term), "SIGTERM");
+    assert_eq!(format!("{}", Signal::Kill), "SIGKILL");
+    assert_eq!(format!("{}", Signal::Hup), "SIGHUP");
+    assert_eq!(format!("{}", Signal::Int), "SIGINT");
+    assert_eq!(format!("{}", Signal::Usr1), "SIGUSR1");
+    assert_eq!(format!("{}", Signal::Usr2), "SIGUSR2");
+}
+
+#[test]
+fn test_signal_as_i32() {
+    // Signal numbers match POSIX on the current platform
+    // Note: Some signals have different numbers on Linux vs BSD/macOS
+    #[cfg(unix)]
+    {
+        use libc;
+        assert_eq!(Signal::Hup.as_i32(), libc::SIGHUP);
+        assert_eq!(Signal::Int.as_i32(), libc::SIGINT);
+        assert_eq!(Signal::Kill.as_i32(), libc::SIGKILL);
+        assert_eq!(Signal::Usr1.as_i32(), libc::SIGUSR1);
+        assert_eq!(Signal::Usr2.as_i32(), libc::SIGUSR2);
+        assert_eq!(Signal::Term.as_i32(), libc::SIGTERM);
+    }
+
+    // On non-Unix, we use hardcoded Linux values
+    #[cfg(not(unix))]
+    {
+        assert_eq!(Signal::Hup.as_i32(), 1);
+        assert_eq!(Signal::Int.as_i32(), 2);
+        assert_eq!(Signal::Kill.as_i32(), 9);
+        assert_eq!(Signal::Usr1.as_i32(), 10);
+        assert_eq!(Signal::Usr2.as_i32(), 12);
+        assert_eq!(Signal::Term.as_i32(), 15);
+    }
+}

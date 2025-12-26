@@ -308,7 +308,9 @@ mod platform {
             // This is the standard OCI runtime pattern - the CLI process becomes the VM.
             // We call ourselves (magikrun start) which handles krun_start_enter().
 
-            // Find the magikrun binary - try various locations
+            // SECURITY: Find the magikrun binary using secure paths only.
+            // We do NOT search PATH to prevent injection attacks where an attacker
+            // with PATH control could substitute a malicious binary.
             let magikrun_path = std::env::current_exe()
                 .ok()
                 .and_then(|exe| {
@@ -327,32 +329,31 @@ mod platform {
                                 .map(|d| d.join("magikrun"))
                                 .filter(|p| p.exists())
                         })
-                })
+                });
+
+            // SECURITY: Only use CARGO_TARGET_DIR in debug builds (development).
+            // In production/release builds, this path is skipped to prevent
+            // env var injection attacks.
+            #[cfg(debug_assertions)]
+            let magikrun_path = magikrun_path.or_else(|| {
+                // Try CARGO_TARGET_DIR if set (for development only)
+                std::env::var("CARGO_TARGET_DIR")
+                    .ok()
+                    .map(|d| std::path::PathBuf::from(d).join("debug").join("magikrun"))
+                    .filter(|p| p.exists())
+            });
+
+            let magikrun_path = magikrun_path
                 .or_else(|| {
-                    // Try CARGO_TARGET_DIR if set
-                    std::env::var("CARGO_TARGET_DIR")
-                        .ok()
-                        .map(|d| std::path::PathBuf::from(d).join("debug").join("magikrun"))
-                        .filter(|p| p.exists())
-                })
-                .or_else(|| {
-                    // Try MAGIKRUN_PATH env var
+                    // Try MAGIKRUN_PATH env var (explicit configuration)
                     std::env::var("MAGIKRUN_PATH")
                         .ok()
                         .map(std::path::PathBuf::from)
                         .filter(|p| p.exists())
                 })
-                .or_else(|| {
-                    // Fall back to PATH
-                    std::env::var("PATH").ok().and_then(|path| {
-                        path.split(':')
-                            .map(|dir| std::path::Path::new(dir).join("magikrun"))
-                            .find(|p| p.exists())
-                    })
-                })
                 .ok_or_else(|| Error::RuntimeUnavailable {
                     runtime: "krun".to_string(),
-                    reason: "magikrun binary not found. Set MAGIKRUN_PATH or install to PATH"
+                    reason: "magikrun binary not found. Set MAGIKRUN_PATH environment variable"
                         .to_string(),
                 })?;
 
@@ -510,14 +511,15 @@ mod platform {
         }
 
         async fn wait(&self, id: &str) -> Result<i32> {
+            use crate::constants::CONTAINER_WAIT_TIMEOUT;
+
             let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
 
             loop {
-                if start.elapsed() > timeout {
+                if start.elapsed() > CONTAINER_WAIT_TIMEOUT {
                     return Err(Error::Timeout {
                         operation: format!("wait for container {}", id),
-                        duration: timeout,
+                        duration: CONTAINER_WAIT_TIMEOUT,
                     });
                 }
 

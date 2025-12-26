@@ -138,10 +138,23 @@ pub struct WasmtimeRuntime {
 /// Internal state tracking for a WASM container.
 ///
 /// Holds execution state and bundle information for the container.
+///
+/// # Module Caching
+///
+/// The compiled [`Module`] is stored during `create()` to avoid double
+/// compilation. This reduces memory pressure and CPU usage during `start()`.
 struct WasmContainer {
     bundle: PathBuf,
-    /// Resolved path to the WASM module within the bundle.
-    module_path: PathBuf,
+    /// Compiled WASM module (cached from create() to avoid recompilation).
+    module: Module,
+    /// WASI arguments for the module.
+    wasi_args: Vec<String>,
+    /// WASI environment variables.
+    wasi_env: Vec<(String, String)>,
+    /// WASI directory pre-opens (guest_path, host_path).
+    wasi_dirs: Vec<(String, String)>,
+    /// Optional fuel limit override.
+    fuel_limit: Option<u64>,
     status: ContainerStatus,
     started_at: Option<Instant>,
     exit_code: Option<i32>,
@@ -272,8 +285,9 @@ impl OciRuntime for WasmtimeRuntime {
             reason: reason.to_string(),
         })?;
 
-        // Validate bundle has a WASM module and get the resolved path
-        let (_module, module_path) = self.load_module(bundle)?;
+        // Compile module once during create() and cache it
+        // This avoids double compilation (validate + run) and reduces memory pressure
+        let (module, _module_path) = self.load_module(bundle)?;
 
         // Register container
         {
@@ -294,11 +308,19 @@ impl OciRuntime for WasmtimeRuntime {
                 return Err(Error::ContainerAlreadyExists(id.to_string()));
             }
 
+            // Load WASI configuration from bundle if present
+            let (wasi_args, wasi_env, wasi_dirs, fuel_limit) =
+                Self::load_wasi_config(bundle).unwrap_or_default();
+
             containers.insert(
                 id.to_string(),
                 WasmContainer {
                     bundle: bundle.to_path_buf(),
-                    module_path,
+                    module,
+                    wasi_args,
+                    wasi_env,
+                    wasi_dirs,
+                    fuel_limit,
                     status: ContainerStatus::Created,
                     started_at: None,
                     exit_code: None,
@@ -313,7 +335,7 @@ impl OciRuntime for WasmtimeRuntime {
     async fn start(&self, id: &str) -> Result<()> {
         debug!("Starting WASM container {}", id);
 
-        let (bundle, module_path) = {
+        let (bundle, module, wasi_args, wasi_env, wasi_dirs, fuel_limit) = {
             let mut containers = self
                 .containers
                 .write()
@@ -333,7 +355,15 @@ impl OciRuntime for WasmtimeRuntime {
 
             container.status = ContainerStatus::Running;
             container.started_at = Some(Instant::now());
-            (container.bundle.clone(), container.module_path.clone())
+            // Clone data for use in spawned task
+            (
+                container.bundle.clone(),
+                container.module.clone(),
+                container.wasi_args.clone(),
+                container.wasi_env.clone(),
+                container.wasi_dirs.clone(),
+                container.fuel_limit,
+            )
         };
 
         // Get engine reference
@@ -348,13 +378,21 @@ impl OciRuntime for WasmtimeRuntime {
                     .unwrap_or_else(|| "engine not initialized".to_string()),
             })?;
 
-        // Load and run module in background
+        // Run module in background using cached compiled module
         let id_owned = id.to_string();
         // Clone Arc for sharing with async task
         let containers_ref = Arc::clone(&self.containers);
 
         tokio::spawn(async move {
-            let result = Self::run_module_blocking(&engine, &module_path, &bundle);
+            let result = Self::run_module(
+                &engine,
+                &module,
+                &bundle,
+                &wasi_args,
+                &wasi_env,
+                &wasi_dirs,
+                fuel_limit,
+            );
 
             // Update container state with exit code
             let (exit_code, log_msg) = match result {
@@ -451,14 +489,15 @@ impl OciRuntime for WasmtimeRuntime {
     }
 
     async fn wait(&self, id: &str) -> Result<i32> {
+        use crate::constants::CONTAINER_WAIT_TIMEOUT;
+
         let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(300); // 5 minute timeout
 
         loop {
-            if start.elapsed() > timeout {
+            if start.elapsed() > CONTAINER_WAIT_TIMEOUT {
                 return Err(Error::Timeout {
                     operation: format!("wait for container {}", id),
-                    duration: timeout,
+                    duration: CONTAINER_WAIT_TIMEOUT,
                 });
             }
 
@@ -479,33 +518,67 @@ impl OciRuntime for WasmtimeRuntime {
 }
 
 impl WasmtimeRuntime {
-    /// Runs a WASM module synchronously.
+    /// Runs a pre-compiled WASM module synchronously.
     ///
     /// # Arguments
     /// * `engine` - The wasmtime engine to use
-    /// * `module_path` - Path to the WASM module file
+    /// * `module` - The pre-compiled WASM module (cached from create())
     /// * `bundle` - Path to the bundle directory (for error context)
-    fn run_module_blocking(engine: &Engine, module_path: &Path, bundle: &Path) -> Result<i32> {
-        // Load module from resolved path
-        let bytes = std::fs::read(module_path).map_err(|e| Error::StartFailed {
-            id: bundle.to_string_lossy().to_string(),
-            reason: format!("failed to read module: {}", e),
-        })?;
+    /// * `wasi_args` - Command-line arguments for the WASM module
+    /// * `wasi_env` - Environment variables for the WASM module
+    /// * `wasi_dirs` - Directory pre-opens (guest_path, host_path)
+    /// * `fuel_limit` - Optional fuel limit override
+    fn run_module(
+        engine: &Engine,
+        module: &Module,
+        bundle: &Path,
+        wasi_args: &[String],
+        wasi_env: &[(String, String)],
+        wasi_dirs: &[(String, String)],
+        fuel_limit: Option<u64>,
+    ) -> Result<i32> {
+        // Build WASI context with configuration
+        let mut wasi_builder = WasiCtxBuilder::new();
+        wasi_builder.inherit_stdout().inherit_stderr();
 
-        let module = Module::new(engine, &bytes).map_err(|e| Error::StartFailed {
-            id: bundle.to_string_lossy().to_string(),
-            reason: format!("failed to compile: {}", e),
-        })?;
+        // Add command-line arguments
+        if !wasi_args.is_empty() {
+            wasi_builder.args(wasi_args);
+        }
 
-        // Build WASI context
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdout()
-            .inherit_stderr()
-            .build_p1();
+        // Add environment variables
+        for (key, value) in wasi_env {
+            wasi_builder.env(key, value);
+        }
 
-        // Create store with fuel
+        // Add directory pre-opens
+        // SECURITY: Only directories explicitly listed are accessible to the WASM module
+        // SECURITY: Use read-only permissions by default to enforce least privilege.
+        // If write access is needed, it must be explicitly configured in wasi.json.
+        for (guest_path, host_path) in wasi_dirs {
+            // Use the path-based API which handles opening internally
+            match wasi_builder.preopened_dir(
+                host_path,
+                guest_path,
+                wasmtime_wasi::DirPerms::READ,
+                wasmtime_wasi::FilePerms::READ,
+            ) {
+                Ok(_) => debug!("Pre-opened WASI directory: {} -> {}", guest_path, host_path),
+                Err(e) => {
+                    warn!(
+                        "Failed to pre-open WASI directory '{}' -> '{}': {}",
+                        guest_path, host_path, e
+                    );
+                }
+            }
+        }
+
+        let wasi = wasi_builder.build_p1();
+
+        // Create store with fuel (use override or default)
         let mut store: Store<WasiP1Ctx> = Store::new(engine, wasi);
-        store.set_fuel(DEFAULT_WASM_FUEL).ok();
+        let fuel = fuel_limit.unwrap_or(DEFAULT_WASM_FUEL);
+        store.set_fuel(fuel).ok();
 
         // Create linker and add WASI
         let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
@@ -514,9 +587,9 @@ impl WasmtimeRuntime {
             reason: format!("failed to add WASI: {}", e),
         })?;
 
-        // Instantiate and run
+        // Instantiate and run (using cached compiled module)
         let instance = linker
-            .instantiate(&mut store, &module)
+            .instantiate(&mut store, module)
             .map_err(|e| Error::StartFailed {
                 id: bundle.to_string_lossy().to_string(),
                 reason: format!("failed to instantiate: {}", e),
@@ -533,5 +606,57 @@ impl WasmtimeRuntime {
         }
 
         Ok(0)
+    }
+
+    /// Loads WASI configuration from a bundle's wasi.json file.
+    ///
+    /// The wasi.json file is optional and contains:
+    /// ```json
+    /// {
+    ///   "args": ["arg1", "arg2"],
+    ///   "env": [["KEY", "VALUE"]],
+    ///   "dirs": [["guest_path", "host_path"]],
+    ///   "fuel_limit": 2000000000
+    /// }
+    /// ```
+    #[allow(clippy::type_complexity)] // Internal helper - tuple matches WasmContainer fields directly
+    fn load_wasi_config(
+        bundle: &Path,
+    ) -> Option<(Vec<String>, Vec<(String, String)>, Vec<(String, String)>, Option<u64>)> {
+        let config_path = bundle.join("wasi.json");
+        if !config_path.exists() {
+            return None;
+        }
+
+        #[derive(serde::Deserialize, Default)]
+        struct WasiConfig {
+            #[serde(default)]
+            args: Vec<String>,
+            #[serde(default)]
+            env: Vec<(String, String)>,
+            #[serde(default)]
+            dirs: Vec<(String, String)>,
+            fuel_limit: Option<u64>,
+        }
+
+        let content = match std::fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to read wasi.json at {}: {}", config_path.display(), e);
+                return None;
+            }
+        };
+
+        match serde_json::from_str::<WasiConfig>(&content) {
+            Ok(config) => Some((config.args, config.env, config.dirs, config.fuel_limit)),
+            Err(e) => {
+                warn!(
+                    "Failed to parse wasi.json at {}: {}. Using defaults.",
+                    config_path.display(),
+                    e
+                );
+                None
+            }
+        }
     }
 }

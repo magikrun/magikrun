@@ -22,7 +22,9 @@
 //! All tar entries are validated before extraction:
 //! - Paths containing `..` are rejected immediately
 //! - Absolute paths (starting with `/`) are rejected
-//! - Symlinks pointing outside the rootfs are blocked
+//! - Symlinks pointing outside the rootfs are blocked (depth-tracking validation)
+//! - Hardlinks are validated with the same depth-tracking as symlinks
+//! - Link targets containing null bytes are rejected (injection attack prevention)
 //!
 //! ```rust,ignore
 //! // This is rejected:
@@ -46,8 +48,11 @@
 //! - `.wh.<filename>` marks `<filename>` for deletion
 //! - `.wh..wh..opq` marks an entire directory as opaque
 //!
-//! Whiteout processing is safe because it only removes files *within* the
-//! rootfs, never following symlinks or escaping the extraction directory.
+//! Whiteout processing uses TOCTOU-safe operations:
+//! - Uses `symlink_metadata()` instead of `exists()` to avoid following symlinks
+//! - Symlinks within rootfs are removed directly (the symlink file, not target)
+//! - Non-symlink files/directories are validated via canonicalization before removal
+//! - Files resolving outside rootfs via intermediate symlinks are skipped
 //!
 //! ## Namespace Sharing for Pods
 //!
@@ -148,8 +153,11 @@ pub enum Bundle {
         wasi_args: Vec<String>,
         /// WASI environment variables.
         wasi_env: Vec<(String, String)>,
-        /// WASI directory mappings.
+        /// WASI directory mappings (guest_path, host_path).
         wasi_dirs: Vec<(String, String)>,
+        /// Optional fuel limit override (default: `DEFAULT_WASM_FUEL`).
+        /// Set to `Some(n)` for CPU-intensive workloads needing more fuel.
+        fuel_limit: Option<u64>,
     },
     /// `MicroVM` rootfs.
     MicroVm {
@@ -317,12 +325,33 @@ impl BundleBuilder {
         let bundle_dir = self.bundle_path(&image.digest);
         let rootfs = bundle_dir.join("rootfs");
 
-        if rootfs.exists() {
-            debug!("Bundle already exists: {}", bundle_dir.display());
-            return Ok(Bundle::OciRuntime {
-                path: bundle_dir,
-                rootfs,
-            });
+        // SECURITY: Always extract fresh. Previously we had an early return for existing
+        // directories, but this created a TOCTOU vulnerability where an attacker with
+        // write access to the bundle directory could pre-populate rootfs with malicious
+        // files between image pull and bundle build.
+        //
+        // If rootfs exists (as file, symlink, or directory), remove it completely
+        // and extract fresh from verified layers.
+        if let Ok(metadata) = fs::symlink_metadata(&rootfs) {
+            if metadata.is_dir() {
+                // Remove existing directory to extract fresh
+                if let Err(e) = fs::remove_dir_all(&rootfs) {
+                    return Err(Error::BundleBuildFailed(format!(
+                        "failed to remove existing rootfs for fresh extraction: {}",
+                        e
+                    )));
+                }
+                debug!("Removed existing rootfs for fresh extraction: {}", rootfs.display());
+            } else {
+                // It's a file or symlink - remove it to prevent symlink attacks
+                if let Err(e) = fs::remove_file(&rootfs) {
+                    return Err(Error::BundleBuildFailed(format!(
+                        "failed to remove existing file/symlink at rootfs path: {}",
+                        e
+                    )));
+                }
+                debug!("Removed file/symlink at rootfs path: {}", rootfs.display());
+            }
         }
 
         fs::create_dir_all(&rootfs)
@@ -1108,7 +1137,11 @@ pub struct OciSeccompSyscall {
 /// 1. **Path traversal**: Rejects paths containing `..` or starting with `/`
 /// 2. **Size tracking**: Accumulates extracted size, fails at `MAX_ROOTFS_SIZE`
 /// 3. **Layer size**: Each layer checked against `MAX_LAYER_SIZE`
-/// 4. **Whiteouts**: Safely processes `.wh.*` deletion markers
+/// 4. **Whiteouts**: TOCTOU-safe removal using `symlink_metadata()`
+/// 5. **Symlinks**: Depth-tracking validation ensures target stays within rootfs
+/// 6. **Hardlinks**: Same depth-tracking validation as symlinks for both absolute and relative paths
+/// 7. **Null bytes**: Rejected in symlink/hardlink targets (injection attack prevention)
+/// 8. **File count**: Enforces `MAX_FILES_PER_LAYER` to prevent inode exhaustion
 ///
 /// ## Layer Application
 ///
@@ -1201,9 +1234,55 @@ pub fn extract_layers_to_rootfs(
                 let target_path = rootfs
                     .join(path.parent().unwrap_or(Path::new("")))
                     .join(target);
-                if target_path.exists() {
-                    let _ = fs::remove_file(&target_path);
-                    let _ = fs::remove_dir_all(&target_path);
+                
+                // SECURITY: Use symlink_metadata() instead of exists() to prevent TOCTOU.
+                // symlink_metadata() returns info about the symlink itself (not following it),
+                // so an attacker cannot substitute a symlink between check and removal.
+                if let Ok(metadata) = fs::symlink_metadata(&target_path) {
+                    // SECURITY: Symlinks are special - the symlink FILE itself is within rootfs
+                    // and can be safely removed. We use remove_file which removes the symlink,
+                    // NOT the target it points to. This is safe regardless of where the target is.
+                    if metadata.file_type().is_symlink() {
+                        // Remove the symlink itself (not following it)
+                        let _ = fs::remove_file(&target_path);
+                    } else {
+                        // For regular files and directories, verify the path stays within rootfs.
+                        // We verify using the target_path directly (not canonicalized) to avoid
+                        // following any intermediate symlinks.
+                        //
+                        // SECURITY: Check that target_path is actually under rootfs.
+                        // This handles the case where the whiteout path itself contains
+                        // suspicious components (already rejected by path traversal check above).
+                        match target_path.canonicalize() {
+                            Ok(canonical) => {
+                                if let Ok(canonical_rootfs) = rootfs.canonicalize() {
+                                    if canonical.starts_with(&canonical_rootfs) {
+                                        if metadata.is_dir() {
+                                            let _ = fs::remove_dir_all(&target_path);
+                                        } else {
+                                            let _ = fs::remove_file(&target_path);
+                                        }
+                                    } else {
+                                        // Target resolves outside rootfs via symlinks in path
+                                        debug!(
+                                            "Whiteout target '{}' resolves outside rootfs, skipping",
+                                            target_path.display()
+                                        );
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Cannot canonicalize - path components don't exist
+                                // Since we have metadata, the file exists but a parent is inaccessible
+                                // Fall back to direct removal (will fail safely if truly inaccessible)
+                                if metadata.is_dir() {
+                                    let _ = fs::remove_dir_all(&target_path);
+                                } else {
+                                    let _ = fs::remove_file(&target_path);
+                                }
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -1242,8 +1321,21 @@ pub fn extract_layers_to_rootfs(
                             path: format!("absolute symlink target contains '..': {}", target_str),
                         });
                     }
-                    // Note: Absolute paths like "/etc/passwd" are OK because tar's
-                    // unpack_in() anchors them to the rootfs. They become rootfs/etc/passwd.
+
+                    // SECURITY: Defensive canonicalization check.
+                    // Even though tar's unpack_in() should anchor absolute paths to rootfs,
+                    // we explicitly verify the resolved path stays within bounds.
+                    // This protects against tar crate behavior changes or edge cases.
+                    let resolved = rootfs.join(target_str.trim_start_matches('/'));
+                    if !resolved.starts_with(rootfs) {
+                        return Err(Error::PathTraversal {
+                            path: format!(
+                                "absolute symlink '{}' resolves outside rootfs: {}",
+                                path.display(),
+                                target_str
+                            ),
+                        });
+                    }
                 } else {
                     // Relative symlink: resolve against entry's parent directory
                     let entry_parent = path.parent().unwrap_or(Path::new(""));
@@ -1281,16 +1373,52 @@ pub fn extract_layers_to_rootfs(
                     }
                 }
 
-                // SECURITY: For hardlinks, also verify the target file exists within rootfs
-                // (hardlinks can only point to existing files, but a malicious archive
-                // could reference files created earlier in the same archive)
-                if entry_type.is_hard_link() && target_str.starts_with('/') {
-                    // Absolute hardlink target - verify it's within rootfs bounds
-                    let target_in_rootfs = rootfs.join(target_str.trim_start_matches('/'));
-                    if !target_in_rootfs.starts_with(rootfs) {
-                        return Err(Error::PathTraversal {
-                            path: format!("hardlink target escapes rootfs: {}", target_str),
-                        });
+                // SECURITY: For hardlinks, verify the target stays within rootfs bounds.
+                // Hardlinks can only point to existing files, but a malicious archive
+                // could reference files created earlier in the same archive to escape.
+                if entry_type.is_hard_link() {
+                    if target_str.starts_with('/') {
+                        // Absolute hardlink target - verify it's within rootfs bounds
+                        let target_in_rootfs = rootfs.join(target_str.trim_start_matches('/'));
+                        if !target_in_rootfs.starts_with(rootfs) {
+                            return Err(Error::PathTraversal {
+                                path: format!("hardlink target escapes rootfs: {}", target_str),
+                            });
+                        }
+                    } else {
+                        // SECURITY: Relative hardlinks need the same depth-tracking validation
+                        // as symlinks. A hardlink like "../../../etc/passwd" would escape rootfs.
+                        // Note: The depth tracking above already ran for relative paths,
+                        // but we add an explicit check here for defense-in-depth.
+                        let entry_parent = path.parent().unwrap_or(Path::new(""));
+                        let mut hl_depth: i32 = 0;
+
+                        // Count depth from entry's parent
+                        for component in entry_parent.components() {
+                            if let std::path::Component::Normal(_) = component {
+                                hl_depth += 1;
+                            }
+                        }
+
+                        // Apply target's components
+                        for component in target.components() {
+                            match component {
+                                std::path::Component::ParentDir => {
+                                    hl_depth -= 1;
+                                    if hl_depth < 0 {
+                                        return Err(Error::PathTraversal {
+                                            path: format!(
+                                                "hardlink '{}' escapes rootfs via target '{}'",
+                                                path.display(),
+                                                target_str
+                                            ),
+                                        });
+                                    }
+                                }
+                                std::path::Component::Normal(_) => hl_depth += 1,
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }

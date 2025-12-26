@@ -10,24 +10,33 @@
 //! │  Pod (NativePodRuntime)                                        │
 //! │                                                                 │
 //! │  ┌───────────────────────────────────────────────────────────┐  │
-//! │  │  Pause Container (holds namespaces)                       │  │
-//! │  │  PID namespace root, network, IPC, UTS                    │  │
+//! │  │  Named Namespaces (created before any container)          │  │
+//! │  │  /run/magik/ns/pod-{id}-{net,ipc,uts}                     │  │
 //! │  └───────────────────────────────────────────────────────────┘  │
 //! │         ▲           ▲           ▲           ▲                   │
 //! │         │           │           │           │ (join namespaces) │
 //! │  ┌──────┴──┐  ┌─────┴───┐  ┌────┴────┐  ┌───┴─────┐            │
-//! │  │Container│  │Container│  │Container│  │Container│            │
-//! │  │   A     │  │   B     │  │   C     │  │   D     │            │
+//! │  │ Pause  │  │Container│  │Container│  │Container│            │
+//! │  │Container│  │   A     │  │   B     │  │   C     │            │
 //! │  └─────────┘  └─────────┘  └─────────┘  └─────────┘            │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! # Named Namespaces for True Atomicity
+//!
+//! Unlike the pause-container-first approach (where namespace paths depend on
+//! pause PID), we create **named namespaces** upfront. This enables:
+//!
+//! 1. **Full atomicity**: All bundles built in PHASE 1 before any container starts
+//! 2. **Predictable paths**: `/run/magik/ns/pod-{id}-{net,ipc,uts}`
+//! 3. **Clean rollback**: Namespaces deleted on failure, no orphaned resources
 //!
 //! # Atomic Deployment
 //!
 //! Unlike the old CRI model (RunPodSandbox → CreateContainer → StartContainer),
 //! `run_pod()` is atomic:
 //!
-//! 1. **Prepare Phase**: Pull all images, build all bundles
+//! 1. **Prepare Phase**: Create namespaces, pull images, build ALL bundles
 //! 2. **Commit Phase**: Start pause container, start all workloads
 //! 3. **Rollback on failure**: Delete everything if any step fails
 //!
@@ -51,8 +60,19 @@ use crate::pod::runtime_base_path;
 /// Subdirectory for pod bundles under the base path.
 const PODS_SUBDIR: &str = "pods";
 
+/// Directory for named namespaces.
+const NAMESPACE_DIR: &str = "/run/magik/ns";
+
 /// Poll interval when waiting for container stop (milliseconds).
 const STOP_POLL_INTERVAL_MS: u64 = 100;
+
+/// Namespace types shared by pod containers.
+/// These are created as named namespaces before any container starts.
+const SHARED_NAMESPACE_TYPES: &[(&str, &str)] = &[
+    ("network", "net"), // Shared pod IP address and ports
+    ("ipc", "ipc"),     // Shared System V IPC and POSIX message queues
+    ("uts", "uts"),     // Shared hostname
+];
 
 /// Native pod runtime using Linux containers.
 ///
@@ -75,12 +95,14 @@ struct PodState {
     spec: PodSpec,
     /// Pause container ID.
     pause_container_id: String,
-    /// Pause container PID (for namespace paths).
+    /// Pause container PID (for monitoring).
     pause_pid: Option<u32>,
     /// Workload container IDs (name → container ID).
     containers: HashMap<String, String>,
     /// Bundle paths (for cleanup).
     bundle_paths: Vec<PathBuf>,
+    /// Named namespace paths (for cleanup).
+    namespace_paths: HashMap<String, PathBuf>,
     /// Current phase.
     phase: PodPhase,
     /// Started timestamp.
@@ -107,15 +129,178 @@ impl NativePodRuntime {
         })
     }
 
-    /// Gets namespace paths from pause container PID.
-    #[allow(dead_code)] // Infrastructure for namespace sharing - will be used when container joining is implemented
-    fn namespace_paths(pid: u32) -> NamespacePaths {
-        let base = format!("/proc/{pid}/ns");
-        NamespacePaths {
-            network: format!("{base}/net"),
-            ipc: format!("{base}/ipc"),
-            uts: format!("{base}/uts"),
-            pid: format!("{base}/pid"),
+    /// Creates named namespaces for a pod.
+    ///
+    /// Named namespaces are persistent paths in `/run/magik/ns/` that exist
+    /// independently of any process. This enables true atomic pod deployment:
+    /// all bundles can be built with known namespace paths BEFORE any container starts.
+    ///
+    /// # Arguments
+    ///
+    /// * `pod_id` - Pod identifier for unique namespace names
+    ///
+    /// # Returns
+    ///
+    /// Map of namespace type → path for use in bundle config.json
+    ///
+    /// # Namespace Creation
+    ///
+    /// Uses `unshare(2)` + bind mount pattern:
+    /// 1. Create empty file at target path
+    /// 2. Fork child that unshares the namespace
+    /// 3. Child bind-mounts its `/proc/self/ns/{type}` to target path
+    /// 4. Child exits, namespace persists via bind mount
+    ///
+    /// # Security
+    ///
+    /// - Requires CAP_SYS_ADMIN for unshare
+    /// - Namespace paths are pod-specific, no collision possible
+    /// - Cleaned up on pod deletion or failure
+    fn create_named_namespaces(pod_id: &PodId) -> Result<HashMap<String, PathBuf>> {
+        use std::fs::{self, File};
+        use std::os::unix::fs::OpenOptionsExt;
+        
+        // Ensure namespace directory exists
+        fs::create_dir_all(NAMESPACE_DIR).map_err(|e| {
+            Error::Internal(format!("failed to create namespace directory {NAMESPACE_DIR}: {e}"))
+        })?;
+
+        let mut paths = HashMap::new();
+
+        for (ns_type, ns_file) in SHARED_NAMESPACE_TYPES {
+            let ns_path = PathBuf::from(format!("{NAMESPACE_DIR}/{}-{}", pod_id.as_str(), ns_file));
+            
+            // Create empty file for bind mount target
+            File::options()
+                .write(true)
+                .create_new(true)
+                .mode(0o644)
+                .open(&ns_path)
+                .map_err(|e| {
+                    // Clean up any namespaces we already created
+                    for (_, created_path) in &paths {
+                        let _ = Self::delete_named_namespace(created_path);
+                    }
+                    Error::Internal(format!(
+                        "failed to create namespace file {}: {}",
+                        ns_path.display(),
+                        e
+                    ))
+                })?;
+
+            // Create namespace via unshare + bind mount
+            // This is done in a child process so the parent doesn't change namespaces
+            let ns_path_clone = ns_path.clone();
+            let ns_file_str = *ns_file;
+            
+            // SAFETY: We're forking and the child immediately execs or exits.
+            // The child doesn't share memory with parent after fork on Linux.
+            let result = std::process::Command::new("unshare")
+                .arg(match ns_file_str {
+                    "net" => "--net",
+                    "ipc" => "--ipc",
+                    "uts" => "--uts",
+                    _ => unreachable!("unknown namespace type"),
+                })
+                .arg("--")
+                .arg("sh")
+                .arg("-c")
+                .arg(format!(
+                    "mount --bind /proc/self/ns/{} {}",
+                    ns_file_str,
+                    ns_path_clone.display()
+                ))
+                .status();
+
+            match result {
+                Ok(status) if status.success() => {
+                    tracing::debug!(
+                        pod = %pod_id,
+                        namespace = %ns_type,
+                        path = %ns_path.display(),
+                        "Created named namespace"
+                    );
+                    paths.insert(ns_type.to_string(), ns_path);
+                }
+                Ok(status) => {
+                    // Clean up the file we created
+                    let _ = fs::remove_file(&ns_path);
+                    // Clean up any namespaces we already created
+                    for (_, created_path) in &paths {
+                        let _ = Self::delete_named_namespace(created_path);
+                    }
+                    return Err(Error::Internal(format!(
+                        "unshare failed for {} namespace: exit code {:?}",
+                        ns_type,
+                        status.code()
+                    )));
+                }
+                Err(e) => {
+                    // Clean up the file we created
+                    let _ = fs::remove_file(&ns_path);
+                    // Clean up any namespaces we already created
+                    for (_, created_path) in &paths {
+                        let _ = Self::delete_named_namespace(created_path);
+                    }
+                    return Err(Error::Internal(format!(
+                        "failed to execute unshare for {} namespace: {}",
+                        ns_type, e
+                    )));
+                }
+            }
+        }
+
+        tracing::info!(
+            pod = %pod_id,
+            namespaces = ?paths.keys().collect::<Vec<_>>(),
+            "Created named namespaces for pod"
+        );
+
+        Ok(paths)
+    }
+
+    /// Deletes a named namespace by unmounting and removing the file.
+    fn delete_named_namespace(path: &Path) -> Result<()> {
+        // Unmount the bind mount
+        let status = std::process::Command::new("umount")
+            .arg(path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(_) | Err(_) => {
+                // umount failed - might already be unmounted, try to remove anyway
+                tracing::debug!(path = %path.display(), "umount failed or not mounted");
+            }
+        }
+
+        // Remove the file
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| {
+                Error::Internal(format!("failed to remove namespace file {}: {}", path.display(), e))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Deletes all named namespaces for a pod.
+    fn delete_pod_namespaces(namespace_paths: &HashMap<String, PathBuf>) {
+        for (ns_type, path) in namespace_paths {
+            if let Err(e) = Self::delete_named_namespace(path) {
+                tracing::warn!(
+                    namespace = %ns_type,
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to delete named namespace"
+                );
+            } else {
+                tracing::debug!(
+                    namespace = %ns_type,
+                    path = %path.display(),
+                    "Deleted named namespace"
+                );
+            }
         }
     }
 
@@ -138,16 +323,10 @@ impl NativePodRuntime {
         for path in &state.bundle_paths {
             let _ = std::fs::remove_dir_all(path);
         }
-    }
-}
 
-/// Namespace paths for container joining.
-#[allow(dead_code)] // Infrastructure for namespace sharing - will be used when container joining is implemented
-struct NamespacePaths {
-    network: String,
-    ipc: String,
-    uts: String,
-    pid: String,
+        // Clean up named namespaces
+        Self::delete_pod_namespaces(&state.namespace_paths);
+    }
 }
 
 #[async_trait]
@@ -186,6 +365,7 @@ impl PodRuntime for NativePodRuntime {
                     pause_pid: None,
                     containers: HashMap::new(),
                     bundle_paths: Vec::new(),
+                    namespace_paths: HashMap::new(),
                     phase: PodPhase::Pending,
                     started_at: None,
                 },
@@ -207,17 +387,28 @@ impl PodRuntime for NativePodRuntime {
             pause_pid: None,
             containers: HashMap::new(),
             bundle_paths: vec![pod_dir.clone()],
+            namespace_paths: HashMap::new(),
             phase: PodPhase::Pending,
             started_at: None,
         };
 
         // =========================================================================
-        // PHASE 1: PREPARE (Pull images, build bundles - no runtime state created)
+        // PHASE 1: PREPARE (Create namespaces, pull images, build ALL bundles)
+        // No runtime state created - fully atomic rollback possible
         // =========================================================================
 
-        // Build pause container bundle
-        // TODO: Use a minimal pause image (gcr.io/google_containers/pause:3.9)
-        // For now, we create a minimal bundle manually
+        // Step 1.1: Create named namespaces FIRST
+        // These are persistent paths that don't depend on any container PID
+        let namespace_paths = match Self::create_named_namespaces(&pod_id) {
+            Ok(paths) => paths,
+            Err(e) => {
+                let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
+                return Err(e);
+            }
+        };
+        state.namespace_paths = namespace_paths.clone();
+
+        // Step 1.2: Build pause container bundle with namespace joining
         let pause_bundle = pod_dir.join("pause");
         let pause_rootfs = pause_bundle.join("rootfs");
         if let Err(e) = std::fs::create_dir_all(&pause_rootfs) {
@@ -227,9 +418,13 @@ impl PodRuntime for NativePodRuntime {
                 "failed to create pause rootfs: {e}"
             )));
         }
+        // TODO: Generate proper config.json for pause container with namespace paths
+        // The pause container ALSO joins the named namespaces (it doesn't create them)
+        state.bundle_paths.push(pause_bundle.clone());
 
-        // Pull all container images and build bundles BEFORE starting anything
-        let mut container_bundles: Vec<(String, PathBuf)> = Vec::new();
+        // Step 1.3: Pull all images and build ALL bundles with namespace paths
+        use crate::image::{Bundle, ImageHandle};
+        let mut prepared_containers: Vec<(String, Bundle)> = Vec::new();
 
         for container_spec in &spec.containers {
             tracing::info!(
@@ -274,30 +469,40 @@ impl PodRuntime for NativePodRuntime {
                 hostname: spec.hostname.clone(),
             };
 
-            let bundle = match self.bundle_builder.build_oci_bundle(&image, &config) {
+            // Build bundle with named namespace paths (known before any container starts!)
+            let bundle = match self.bundle_builder.build_oci_bundle_with_namespaces(
+                &image,
+                &config,
+                &namespace_paths,
+            ) {
                 Ok(b) => b,
                 Err(e) => {
                     self.cleanup_failed_pod(&state).await;
                     let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                     return Err(Error::BundleBuildFailed(format!(
                         "failed to build bundle for {}: {}",
-                        container_spec.name, e
+                        config.name, e
                     )));
                 }
             };
+            state.bundle_paths.push(bundle.path().to_path_buf());
 
             let container_id = format!("{}-{}", pod_id.as_str(), container_spec.name);
-            container_bundles.push((container_id.clone(), bundle.path().to_path_buf()));
-            state.bundle_paths.push(bundle.path().to_path_buf());
+            prepared_containers.push((container_id, bundle));
         }
 
+        tracing::info!(
+            pod = %pod_id,
+            container_count = prepared_containers.len(),
+            "PHASE 1 complete: all images pulled, all bundles built"
+        );
+
         // =========================================================================
-        // PHASE 2: COMMIT (Start containers - runtime state created)
+        // PHASE 2: COMMIT (Start all containers - runtime state created)
+        // All preparation done - now we commit to starting containers
         // =========================================================================
 
-        // Create and start pause container
-        // TODO: Generate proper config.json for pause container
-        // For now, this requires the bundle to exist with config.json
+        // Step 2.1: Create and start pause container
         if let Err(e) = self
             .runtime
             .create(&state.pause_container_id, &pause_bundle)
@@ -320,17 +525,14 @@ impl PodRuntime for NativePodRuntime {
             });
         }
 
-        // Get pause container PID for namespace paths
+        // Get pause container PID for monitoring (not for namespaces anymore)
         if let Ok(pause_state) = self.runtime.state(&state.pause_container_id).await {
             state.pause_pid = pause_state.pid;
         }
 
-        // Start all workload containers
-        for (container_id, bundle_path) in &container_bundles {
-            // TODO: Inject namespace paths into config.json to join pause container's namespaces
-            // This requires modifying the OCI spec before container creation
-
-            if let Err(e) = self.runtime.create(container_id, bundle_path).await {
+        // Step 2.2: Create and start all workload containers (bundles already built)
+        for (container_id, bundle) in &prepared_containers {
+            if let Err(e) = self.runtime.create(container_id, bundle.path()).await {
                 self.cleanup_failed_pod(&state).await;
                 let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                 return Err(Error::CreateFailed {
@@ -355,6 +557,12 @@ impl PodRuntime for NativePodRuntime {
                 .to_string();
             state.containers.insert(name, container_id.clone());
         }
+
+        tracing::info!(
+            pod = %pod_id,
+            containers = state.containers.len(),
+            "PHASE 2 complete: all containers started"
+        );
 
         // Pod is now running
         state.phase = PodPhase::Running;
@@ -477,6 +685,9 @@ impl PodRuntime for NativePodRuntime {
         for path in &state.bundle_paths {
             let _ = std::fs::remove_dir_all(path);
         }
+
+        // Clean up named namespaces
+        Self::delete_pod_namespaces(&state.namespace_paths);
 
         Ok(())
     }

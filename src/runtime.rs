@@ -66,14 +66,13 @@
 //!
 //! ## Implementations
 //!
-//! This crate provides four implementations:
+//! This crate provides three implementations:
 //!
 //! | Runtime            | Platform       | Isolation          | Use Case            |
 //! |--------------------|----------------|--------------------|---------------------|
 //! | `NativeRuntime`    | Linux only     | Namespaces+cgroups | Production containers|
 //! | `WasmtimeRuntime`  | Cross-platform | WASM sandbox       | Portable plugins    |
 //! | `KrunRuntime`      | Linux/macOS    | Hardware VM        | Untrusted workloads |
-//! | `WindowsRuntime`   | Windows only   | WSL2 MicroVM       | Linux on Windows    |
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -88,9 +87,7 @@ use std::path::Path;
 pub use crate::error::{Error, Result};
 
 // Runtime implementations
-pub use crate::runtimes::{
-    KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime, WindowsRuntime,
-};
+pub use crate::runtimes::{KrunRuntime, NativeRuntime, RuntimeRegistry, WasmtimeRuntime};
 
 // Security constants for runtime configuration (public API for consumers)
 pub use crate::constants::{

@@ -85,11 +85,8 @@ pub const MAX_FILES_PER_LAYER: usize = 100_000;
 /// **Security**: Prevents memory exhaustion from parsing malformed manifests.
 /// Standard OCI manifests are typically under 100 KiB.
 ///
-/// **Note**: Currently reserved. The `oci_distribution` crate parses manifests
-/// internally without exposing raw bytes. This constant documents the intended
-/// limit for when a custom registry client is implemented or the upstream API
-/// allows pre-parse validation.
-#[allow(dead_code)]
+/// **Enforcement**: Validated in `resolve_manifest` when handling image indexes.
+/// The manifest descriptor size is checked before fetching nested manifests.
 pub const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
 
 /// Maximum config blob size (1 MiB).
@@ -97,10 +94,8 @@ pub const MAX_MANIFEST_SIZE: usize = 1024 * 1024;
 /// **Security**: Prevents memory exhaustion from oversized image configs.
 /// Standard configs are typically under 50 KiB.
 ///
-/// **Note**: Currently reserved. The `oci_distribution` crate handles config
-/// blob fetching internally. This constant documents the intended limit for
-/// when custom validation is possible.
-#[allow(dead_code)]
+/// **Enforcement**: Validated in `resolve_manifest` from the config descriptor
+/// size field before the blob is used.
 pub const MAX_CONFIG_SIZE: usize = 1024 * 1024;
 
 /// Maximum number of concurrent containers per runtime.
@@ -111,6 +106,16 @@ pub const MAX_CONFIG_SIZE: usize = 1024 * 1024;
 /// **Rationale**: 1024 containers is sufficient for most deployments
 /// while bounding runtime memory usage.
 pub const MAX_CONTAINERS: usize = 1024;
+
+/// Maximum number of in-flight blob downloads tracked for GC protection.
+///
+/// **Security**: Prevents memory exhaustion from unbounded inflight tracking.
+/// An attacker triggering many concurrent pulls could exhaust memory via
+/// the inflight HashSet if unbounded.
+///
+/// **Rationale**: 256 concurrent layer downloads is generous for legitimate
+/// use while bounding memory usage to ~50 KiB for digest strings.
+pub const MAX_INFLIGHT_BLOBS: usize = 256;
 
 // =============================================================================
 // Resource Limits
@@ -214,6 +219,15 @@ pub const DEFAULT_GRACE_PERIOD: Duration = Duration::from_secs(30);
 /// Interactive sessions should use streaming, not exec.
 pub const EXEC_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Timeout for wait operations (5 minutes).
+///
+/// **Security**: Prevents indefinite blocking when waiting for container exit.
+/// Callers can use shorter timeouts for specific use cases.
+///
+/// **Rationale**: 5 minutes is sufficient for most graceful shutdown scenarios
+/// while ensuring eventual timeout for stuck containers.
+pub const CONTAINER_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+
 // =============================================================================
 // Storage Paths
 // =============================================================================
@@ -250,10 +264,18 @@ pub const CONTAINER_STATE_DIR: &str = "containers";
 
 /// OCI Runtime Spec version for generated `config.json`.
 ///
+/// Using 1.0.2 for maximum compatibility with existing tooling.
+/// The OCI runtime-spec 1.1.0+ adds features we don't yet use
+/// (e.g., domainname, consoleSize in state).
+///
 /// See: <https://github.com/opencontainers/runtime-spec/releases>
 pub const OCI_RUNTIME_SPEC_VERSION: &str = "1.0.2";
 
 /// OCI Image Spec version for manifest parsing.
+///
+/// Using 1.0.2 for maximum compatibility with existing registries.
+/// The OCI image-spec 1.1.0 adds artifact support which is not yet
+/// required for container image operations.
 ///
 /// See: <https://github.com/opencontainers/image-spec/releases>
 pub const OCI_IMAGE_SPEC_VERSION: &str = "1.0.2";

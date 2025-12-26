@@ -92,7 +92,7 @@
 //! assert_eq!(retrieved, data);
 //! ```
 
-use crate::constants::BLOB_STORE_DIR;
+use crate::constants::{BLOB_STORE_DIR, MAX_INFLIGHT_BLOBS};
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -177,19 +177,41 @@ impl BlobStore {
     /// Call this BEFORE starting a blob download to protect it from GC.
     /// Call [`Self::untrack_inflight`] after the blob is stored.
     ///
+    /// # Returns
+    ///
+    /// `true` if tracking succeeded, `false` if the limit was reached.
+    ///
+    /// # Security
+    ///
+    /// Enforces `MAX_INFLIGHT_BLOBS` to prevent memory exhaustion from
+    /// unbounded concurrent downloads.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// store.track_inflight(&digest);
+    /// if !store.track_inflight(&digest) {
+    ///     return Err(Error::ResourceExhausted("too many concurrent downloads"));
+    /// }
     /// // ... download blob ...
     /// store.put_blob(&digest, &data)?;
     /// store.untrack_inflight(&digest);
     /// ```
-    pub fn track_inflight(&self, digest: &str) {
+    #[must_use = "must check if tracking succeeded before downloading to ensure GC safety"]
+    pub fn track_inflight(&self, digest: &str) -> bool {
         if let Ok(mut inflight) = self.inflight.write() {
+            // SECURITY: Enforce limit to prevent memory exhaustion
+            if inflight.len() >= MAX_INFLIGHT_BLOBS {
+                warn!(
+                    "Inflight blob limit reached ({}), rejecting {}",
+                    MAX_INFLIGHT_BLOBS, digest
+                );
+                return false;
+            }
             inflight.insert(digest.to_string());
             debug!("Tracking in-flight blob: {}", digest);
+            return true;
         }
+        false
     }
 
     /// Removes a digest from in-flight tracking.
@@ -510,5 +532,69 @@ mod tests {
         assert!(path.to_string_lossy().contains("sha256"));
         assert!(path.to_string_lossy().contains("ab"));
         assert!(path.to_string_lossy().ends_with("abcd1234"));
+    }
+
+    #[test]
+    fn test_inflight_limit_enforced() {
+        let temp = TempDir::new().unwrap();
+        let store = BlobStore::with_path(temp.path().to_path_buf()).unwrap();
+
+        // Track up to MAX_INFLIGHT_BLOBS
+        for i in 0..MAX_INFLIGHT_BLOBS {
+            let digest = format!("sha256:{:064x}", i);
+            assert!(
+                store.track_inflight(&digest),
+                "Should accept inflight #{}",
+                i
+            );
+        }
+
+        // Next one should be rejected
+        let overflow_digest = format!("sha256:{:064x}", MAX_INFLIGHT_BLOBS);
+        assert!(
+            !store.track_inflight(&overflow_digest),
+            "Should reject inflight beyond limit"
+        );
+
+        // After untracking one, should accept again
+        store.untrack_inflight("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        assert!(
+            store.track_inflight(&overflow_digest),
+            "Should accept after untrack"
+        );
+    }
+
+    #[test]
+    fn test_gc_protects_inflight_blobs() {
+        let temp = TempDir::new().unwrap();
+        let store = BlobStore::with_path(temp.path().to_path_buf()).unwrap();
+
+        // Create some blobs
+        let data1 = b"blob one";
+        let data2 = b"blob two";
+        let digest1 = format!("sha256:{}", hex::encode(Sha256::digest(data1)));
+        let digest2 = format!("sha256:{}", hex::encode(Sha256::digest(data2)));
+
+        store.put_blob(&digest1, data1).unwrap();
+        store.put_blob(&digest2, data2).unwrap();
+
+        assert!(store.has_blob(&digest1));
+        assert!(store.has_blob(&digest2));
+
+        // Mark digest1 as in-flight (simulates concurrent download)
+        assert!(store.track_inflight(&digest1));
+
+        // GC with empty referenced list - should delete digest2 but protect digest1
+        let stats = store.gc(&[]).unwrap();
+
+        // digest1 should still exist (protected by inflight)
+        assert!(store.has_blob(&digest1), "Inflight blob should be protected from GC");
+        // digest2 should be deleted
+        assert!(!store.has_blob(&digest2), "Unreferenced blob should be deleted");
+        // Stats should show we removed 1 blob
+        assert_eq!(stats.removed_count, 1);
+
+        // Cleanup
+        store.untrack_inflight(&digest1);
     }
 }

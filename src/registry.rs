@@ -76,7 +76,7 @@
 //!
 //! [`BlobStore::put_blob`]: crate::storage::BlobStore::put_blob
 
-use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS};
+use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_CONFIG_SIZE, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS, MAX_MANIFEST_SIZE};
 use crate::error::{Error, Result};
 use crate::platform::Platform;
 use crate::storage::BlobStore;
@@ -135,64 +135,11 @@ pub struct LayerInfo {
     pub media_type: String,
 }
 
-/// OCI registry client for image operations.
-///
-/// Wraps the `oci-distribution` client with authentication configuration.
-/// Currently used internally by [`pull_image`]; may be exposed for direct
-/// registry access in the future.
-///
-/// ## Authentication
-///
-/// | Method | Constructor |
-/// |--------|-------------|
-/// | Anonymous | [`RegistryClient::new`] |
-/// | Basic auth | [`RegistryClient::with_auth`] |
-///
-/// For OAuth/bearer tokens (e.g., GCR, ECR), extend this struct.
-///
-/// ## Status
-///
-/// This struct is defined for future authenticated registry operations.
-/// Currently, `pull_image` uses anonymous auth directly. This will be wired
-/// up when ImageService supports authenticated pulls.
-#[allow(dead_code)] // Reserved for authenticated registry operations
-pub struct RegistryClient {
-    /// The underlying OCI distribution client.
-    client: Client,
-    /// Authentication configuration for registry access.
-    auth: RegistryAuth,
-}
-
-#[allow(dead_code)] // Reserved for authenticated registry operations
-impl RegistryClient {
-    /// Creates a new registry client with anonymous auth.
-    pub fn new() -> Self {
-        Self {
-            client: Client::new(ClientConfig {
-                protocol: ClientProtocol::Https,
-                ..Default::default()
-            }),
-            auth: RegistryAuth::Anonymous,
-        }
-    }
-
-    /// Creates a client with basic auth.
-    pub fn with_auth(username: &str, password: &str) -> Self {
-        Self {
-            client: Client::new(ClientConfig {
-                protocol: ClientProtocol::Https,
-                ..Default::default()
-            }),
-            auth: RegistryAuth::Basic(username.to_string(), password.to_string()),
-        }
-    }
-}
-
-impl Default for RegistryClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// TODO: Implement authenticated registry operations
+// When ready, add a RegistryClient struct here with:
+// - OAuth/bearer token support for GCR, ECR, ACR
+// - Credential caching and refresh
+// - Integration with ImageService for authenticated pulls
 
 /// Pulls an OCI image from a registry with full validation.
 ///
@@ -298,70 +245,8 @@ pub async fn pull_image(image_ref: &str, storage: &Arc<BlobStore>) -> Result<Ima
     let (layers, config_digest, resolved_platform) =
         resolve_manifest(&client, &reference, &auth, manifest, &platform).await?;
 
-    // Validate layer count
-    if layers.len() > MAX_LAYERS {
-        return Err(Error::ImagePullFailed {
-            reference: image_ref.to_string(),
-            reason: format!("too many layers: {} > {}", layers.len(), MAX_LAYERS),
-        });
-    }
-
-    // Pull layers
-    for layer in &layers {
-        if storage.has_blob(&layer.digest) {
-            debug!("Layer {} already cached", layer.digest);
-            continue;
-        }
-
-        debug!("Pulling layer: {} ({} bytes)", layer.digest, layer.size);
-
-        if layer.size > MAX_LAYER_SIZE as u64 {
-            return Err(Error::ImageTooLarge {
-                size: layer.size,
-                limit: MAX_LAYER_SIZE as u64,
-            });
-        }
-
-        // SECURITY: Track in-flight to protect from GC during download
-        storage.track_inflight(&layer.digest);
-
-        let layer_desc = oci_distribution::manifest::OciDescriptor {
-            digest: layer.digest.clone(),
-            size: layer.size as i64,
-            media_type: layer.media_type.clone(),
-            urls: None,
-            annotations: None,
-        };
-
-        let mut data = Vec::new();
-        let pull_result = tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
-            client.pull_blob(&reference, &layer_desc, &mut data).await
-        })
-        .await;
-
-        // Handle timeout
-        if pull_result.is_err() {
-            storage.untrack_inflight(&layer.digest);
-            return Err(Error::Timeout {
-                operation: format!("pull layer {}", layer.digest),
-                duration: IMAGE_PULL_TIMEOUT,
-            });
-        }
-
-        // Handle pull error
-        if let Err(e) = pull_result.unwrap() {
-            storage.untrack_inflight(&layer.digest);
-            return Err(Error::LayerExtractionFailed {
-                digest: layer.digest.clone(),
-                reason: e.to_string(),
-            });
-        }
-
-        // Store in blob store and untrack
-        let store_result = storage.put_blob(&layer.digest, &data);
-        storage.untrack_inflight(&layer.digest);
-        store_result?;
-    }
+    // Validate layer count and pull layers
+    pull_layers(&client, &reference, &layers, image_ref, storage).await?;
 
     Ok(ImageHandle {
         reference: image_ref.to_string(),
@@ -465,6 +350,36 @@ pub async fn pull_image_for_platform(
     let (layers, config_digest, resolved_platform) =
         resolve_manifest(&client, &reference, &auth, manifest, target_platform).await?;
 
+    // Validate layer count and pull layers
+    pull_layers(&client, &reference, &layers, image_ref, storage).await?;
+
+    Ok(ImageHandle {
+        reference: image_ref.to_string(),
+        digest,
+        platform: resolved_platform,
+        layers,
+        config_digest,
+    })
+}
+
+/// Pulls all layers for an image with validation, deduplication, and GC safety.
+///
+/// This is the shared implementation for both `pull_image` and `pull_image_for_platform`.
+///
+/// # Security
+///
+/// - Validates layer count against `MAX_LAYERS`
+/// - Validates layer size against `MAX_LAYER_SIZE`
+/// - Tracks in-flight downloads to protect from GC
+/// - Enforces `IMAGE_PULL_TIMEOUT` on each layer download
+/// - Content verification via `BlobStore::put_blob`
+async fn pull_layers(
+    client: &Client,
+    reference: &Reference,
+    layers: &[LayerInfo],
+    image_ref: &str,
+    storage: &Arc<BlobStore>,
+) -> Result<()> {
     // Validate layer count
     if layers.len() > MAX_LAYERS {
         return Err(Error::ImagePullFailed {
@@ -473,8 +388,8 @@ pub async fn pull_image_for_platform(
         });
     }
 
-    // Pull layers
-    for layer in &layers {
+    // Pull each layer
+    for layer in layers {
         if storage.has_blob(&layer.digest) {
             debug!("Layer {} already cached", layer.digest);
             continue;
@@ -490,7 +405,11 @@ pub async fn pull_image_for_platform(
         }
 
         // SECURITY: Track in-flight to protect from GC during download
-        storage.track_inflight(&layer.digest);
+        if !storage.track_inflight(&layer.digest) {
+            return Err(Error::ResourceExhausted(
+                "too many concurrent layer downloads".to_string(),
+            ));
+        }
 
         let layer_desc = oci_distribution::manifest::OciDescriptor {
             digest: layer.digest.clone(),
@@ -502,7 +421,7 @@ pub async fn pull_image_for_platform(
 
         let mut data = Vec::new();
         let pull_result = tokio::time::timeout(IMAGE_PULL_TIMEOUT, async {
-            client.pull_blob(&reference, &layer_desc, &mut data).await
+            client.pull_blob(reference, &layer_desc, &mut data).await
         })
         .await;
 
@@ -530,13 +449,7 @@ pub async fn pull_image_for_platform(
         store_result?;
     }
 
-    Ok(ImageHandle {
-        reference: image_ref.to_string(),
-        digest,
-        platform: resolved_platform,
-        layers,
-        config_digest,
-    })
+    Ok(())
 }
 
 /// Resolves a manifest (handling multi-arch index).
@@ -551,6 +464,15 @@ async fn resolve_manifest(
 
     match manifest {
         oci_distribution::manifest::OciManifest::Image(img) => {
+            // SECURITY: Validate config blob size from descriptor before using
+            let config_size = img.config.size as usize;
+            if config_size > MAX_CONFIG_SIZE {
+                return Err(Error::ImageTooLarge {
+                    size: config_size as u64,
+                    limit: MAX_CONFIG_SIZE as u64,
+                });
+            }
+
             let layers = img
                 .layers
                 .into_iter()
@@ -605,6 +527,15 @@ async fn resolve_manifest(
                 }
             })?;
 
+            // SECURITY: Validate manifest size from descriptor before fetching
+            let manifest_size = manifest_desc.size as usize;
+            if manifest_size > MAX_MANIFEST_SIZE {
+                return Err(Error::ImageTooLarge {
+                    size: manifest_size as u64,
+                    limit: MAX_MANIFEST_SIZE as u64,
+                });
+            }
+
             // Pull platform-specific manifest
             let digest_ref_str = format!(
                 "{}/{}@{}",
@@ -630,6 +561,15 @@ async fn resolve_manifest(
 
             match platform_manifest {
                 oci_distribution::manifest::OciManifest::Image(img) => {
+                    // SECURITY: Validate config blob size from descriptor before using
+                    let config_size = img.config.size as usize;
+                    if config_size > MAX_CONFIG_SIZE {
+                        return Err(Error::ImageTooLarge {
+                            size: config_size as u64,
+                            limit: MAX_CONFIG_SIZE as u64,
+                        });
+                    }
+
                     let layers = img
                         .layers
                         .into_iter()

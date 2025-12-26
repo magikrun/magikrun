@@ -45,7 +45,7 @@
 
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig, Os, Platform};
-use crate::pod::tsi::TsiClient;
+use crate::passt::ControlClient;
 use crate::pod::{
     ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId, PodPhase, PodRuntime,
     PodSpec, PodStatus, PodSummary,
@@ -86,8 +86,8 @@ struct VmPodState {
     spec: PodSpec,
     /// VM container ID.
     vm_id: String,
-    /// vsock CID for TSI communication (if available).
-    vsock_cid: Option<u32>,
+    /// Control port for TSI communication via passt (if available).
+    control_port: Option<u16>,
     /// Container names in this pod.
     container_names: Vec<String>,
     /// Bundle path (for cleanup).
@@ -221,7 +221,7 @@ impl PodRuntime for MicroVmPodRuntime {
                 VmPodState {
                     spec: spec.clone(),
                     vm_id: vm_id.clone(),
-                    vsock_cid: None,
+                    control_port: None,
                     container_names: Vec::new(),
                     bundle_path: pod_dir.clone(),
                     phase: PodPhase::Pending,
@@ -241,7 +241,7 @@ impl PodRuntime for MicroVmPodRuntime {
         let mut state = VmPodState {
             spec: spec.clone(),
             vm_id: vm_id.clone(),
-            vsock_cid: None, // Will be set after VM boot when CID is assigned
+            control_port: None, // Will be set after VM boot when passt is ready
             container_names: spec.containers.iter().map(|c| c.name.clone()).collect(),
             bundle_path: pod_dir.clone(),
             phase: PodPhase::Pending,
@@ -545,8 +545,8 @@ impl PodRuntime for MicroVmPodRuntime {
         command: &[String],
         options: ExecOptions,
     ) -> Result<ExecResult> {
-        // Get vsock CID from pod state
-        let (vsock_cid, container_names) = {
+        // Get control port from pod state
+        let (control_port, container_names) = {
             let pods = self
                 .pods
                 .read()
@@ -556,7 +556,7 @@ impl PodRuntime for MicroVmPodRuntime {
                 .get(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
-            (state.vsock_cid, state.container_names.clone())
+            (state.control_port, state.container_names.clone())
         };
 
         // Validate container exists in pod
@@ -567,39 +567,37 @@ impl PodRuntime for MicroVmPodRuntime {
             )));
         }
 
-        // Check if we have vsock CID
-        let cid = vsock_cid.ok_or_else(|| {
+        // Check if we have control port
+        let port = control_port.ok_or_else(|| {
             Error::NotSupported(
-                "exec not available: VM vsock CID not assigned (vminit TSI server may not be running)".to_string()
+                "exec not available: control port not assigned (vminit may not be running)".to_string()
             )
         })?;
 
-        // Create TSI client and execute
-        let client = TsiClient::new(cid);
+        // Create control client and execute
+        let client = ControlClient::new(port);
 
         match client.exec(container, command.to_vec(), options.tty).await {
-            Ok(session_id) => {
+            Ok(result) => {
                 tracing::debug!(
                     pod = %id,
                     container = %container,
-                    session_id = %session_id,
-                    "Exec session created"
+                    exit_code = result.exit_code,
+                    "exec completed"
                 );
-                // For now, return success with session ID in stdout
-                // Full streaming exec would require a more complex API
                 Ok(ExecResult {
-                    exit_code: None, // Session-based exec, no immediate exit code
-                    stdout: Some(format!("session:{session_id}").into_bytes()),
-                    stderr: None,
+                    exit_code: Some(result.exit_code),
+                    stdout: Some(result.stdout.into_bytes()),
+                    stderr: Some(result.stderr.into_bytes()),
                 })
             }
-            Err(e) => Err(Error::Internal(format!("TSI exec failed: {e}"))),
+            Err(e) => Err(Error::Internal(format!("control exec failed: {e}"))),
         }
     }
 
     async fn logs(&self, id: &PodId, container: &str, options: LogOptions) -> Result<Vec<u8>> {
-        // Get vsock CID from pod state
-        let (vsock_cid, container_names) = {
+        // Get control port from pod state
+        let (control_port, container_names) = {
             let pods = self
                 .pods
                 .read()
@@ -609,7 +607,7 @@ impl PodRuntime for MicroVmPodRuntime {
                 .get(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
 
-            (state.vsock_cid, state.container_names.clone())
+            (state.control_port, state.container_names.clone())
         };
 
         // Validate container exists in pod
@@ -620,26 +618,26 @@ impl PodRuntime for MicroVmPodRuntime {
             )));
         }
 
-        // Check if we have vsock CID
-        let cid = vsock_cid.ok_or_else(|| {
+        // Check if we have control port
+        let port = control_port.ok_or_else(|| {
             Error::NotSupported(
-                "logs not available: VM vsock CID not assigned (vminit TSI server may not be running)".to_string()
+                "logs not available: control port not assigned (vminit may not be running)".to_string()
             )
         })?;
 
-        // Create TSI client and request logs
-        let client = TsiClient::new(cid);
+        // Create control client and request logs
+        let client = ControlClient::new(port);
 
         match client
             .logs(container, options.follow, options.tail_lines)
             .await
         {
-            Ok(()) => {
-                // The current TSI logs() returns () - full log streaming
-                // would require a more complex API with async streams
-                Ok(b"Log streaming initiated. Use TSI session for full logs.".to_vec())
+            Ok(result) => {
+                // Join log lines with newlines
+                let output = result.lines.join("\n");
+                Ok(output.into_bytes())
             }
-            Err(e) => Err(Error::Internal(format!("TSI logs failed: {e}"))),
+            Err(e) => Err(Error::Internal(format!("control logs failed: {e}"))),
         }
     }
 }

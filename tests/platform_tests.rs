@@ -230,7 +230,6 @@ fn test_has_hypervisor() {
 fn test_os_display() {
     assert_eq!(format!("{:?}", Os::Linux), "Linux");
     assert_eq!(format!("{:?}", Os::Darwin), "Darwin");
-    assert_eq!(format!("{:?}", Os::Windows), "Windows");
     assert_eq!(format!("{:?}", Os::Unknown), "Unknown");
 }
 

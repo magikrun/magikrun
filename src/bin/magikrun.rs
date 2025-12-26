@@ -295,14 +295,7 @@ fn detect_platform_runtime() -> String {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn detect_platform_runtime() -> String {
-    // WSL2-based runtime for Windows
-    // For now, default to wasm as Windows runtime is still experimental
-    "wasm".to_string()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn detect_platform_runtime() -> String {
     // Unknown platform - wasm is always available
     "wasm".to_string()
