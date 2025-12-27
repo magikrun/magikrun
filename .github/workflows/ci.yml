@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libkrun-prefix
-          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v2
+          key: libkrun-ubuntu-${{ env.LIBKRUN_VERSION }}-v3-net
 
       - name: Build libkrun
         if: steps.cache-libkrun.outputs.cache-hit != 'true'
@@ -85,8 +85,8 @@ jobs:
           mkdir -p init
           touch init/init
           
-          # Build libkrun (allow unused imports - upstream has some in v1.16.0)
-          RUSTFLAGS="-A unused_imports" make
+          # Build libkrun with NET feature for passt/networking support
+          RUSTFLAGS="-A unused_imports" NET=1 make
           
           # Install to prefix
           PREFIX=/tmp/libkrun-prefix make install
