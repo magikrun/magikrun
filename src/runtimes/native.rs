@@ -273,6 +273,58 @@ mod linux {
 
             Ok(exit_code)
         }
+
+        /// Attempts to clean up an orphaned container from libcontainer state.
+        ///
+        /// This is called when a container was created via libcontainer but we
+        /// failed to track it (e.g., due to limit race condition). The cleanup
+        /// is best-effort and failures are logged but not propagated.
+        ///
+        /// # Security Note
+        ///
+        /// This method should only be called with container IDs that we just
+        /// created but failed to track. Never call with arbitrary IDs to
+        /// prevent an attacker from triggering cleanup of legitimate containers.
+        fn cleanup_orphaned_container(&self, id: &str) {
+            debug!("Attempting cleanup of orphaned container {}", id);
+
+            match self.load_container(id) {
+                Ok(mut container) => {
+                    // Try to delete the container
+                    if let Err(e) = container.delete(true) {
+                        warn!(
+                            "Failed to delete orphaned container {} (may require manual cleanup): {}",
+                            id, e
+                        );
+                    } else {
+                        info!("Successfully cleaned up orphaned container {}", id);
+                    }
+                }
+                Err(e) => {
+                    // Container state directory may not exist if creation partially failed
+                    debug!(
+                        "Could not load orphaned container {} for cleanup: {}",
+                        id, e
+                    );
+                    // Try to remove the state directory directly
+                    let container_dir = self.state_root.join(id);
+                    if container_dir.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&container_dir) {
+                            warn!(
+                                "Failed to remove orphaned container dir {}: {}",
+                                container_dir.display(),
+                                e
+                            );
+                        } else {
+                            info!(
+                                "Removed orphaned container state directory: {}",
+                                container_dir.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     impl Default for NativeRuntime {
@@ -364,14 +416,14 @@ mod linux {
                 // This handles the rare race where another thread added a container
                 // between our read check and this write.
                 if containers.len() >= MAX_CONTAINERS {
-                    // Container was created but we can't track it - attempt cleanup
+                    // Container was created by libcontainer but we can't track it.
+                    // Clean up immediately to prevent orphaned state on disk.
+                    drop(containers); // Release lock before cleanup
                     warn!(
                         "Container limit race detected, cleaning up container {}",
                         id
                     );
-                    // Note: libcontainer container on disk will be orphaned here,
-                    // but this is an extremely rare race condition. A background
-                    // cleanup process should handle orphaned containers.
+                    self.cleanup_orphaned_container(id);
                     return Err(Error::ResourceExhausted(format!(
                         "maximum container limit reached ({})",
                         MAX_CONTAINERS

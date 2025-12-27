@@ -103,6 +103,24 @@ mod linux {
     const CONTAINERS_PATH: &str = "/containers";
 
     /// Control server port (passt maps host port to this).
+    ///
+    /// # Security Model
+    ///
+    /// The control server uses plain TCP without TLS or authentication.
+    /// This is acceptable because:
+    ///
+    /// 1. **Network Isolation**: The VM's network is created by passt/pasta,
+    ///    which only exposes explicitly mapped ports. Port 1024 is internal.
+    /// 2. **Host-Only Access**: Only the host can connect via the vsock/passt
+    ///    bridge. External network traffic cannot reach this port.
+    /// 3. **Defense in Depth**: Even if accessed, operations are bounded by
+    ///    `MAX_COMMAND_ARG_LEN`, `MAX_COMMAND_ARGS`, `REQUEST_TIMEOUT_SECS`.
+    /// 4. **No Privilege Escalation**: The control server runs as the same
+    ///    user as the VM workload; exec doesn't grant additional privileges.
+    ///
+    /// For multi-tenant deployments with untrusted VM networks, consider:
+    /// - Using vsock (AF_VSOCK) instead of TCP for host-to-guest communication
+    /// - Adding a shared-secret authentication handshake
     const CONTROL_PORT: u16 = 1024;
 
     /// Grace period for SIGTERM before SIGKILL (seconds).

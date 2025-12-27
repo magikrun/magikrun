@@ -167,6 +167,10 @@ mod runtimes;
 mod storage;
 
 // =============================================================================
+// Internal Modules (not part of public API)
+// =============================================================================
+
+// =============================================================================
 // Facade Modules
 // =============================================================================
 
@@ -221,29 +225,22 @@ pub mod pod;
 /// - `InfraExtension`: Trait for extending infra behavior (implemented by workplane)
 /// - `InfraEvent`: Container lifecycle events
 /// - `InfraContext`: Context passed to extensions
-/// - `PortRequest`, `PortProtocol`: Dynamic port mapping via passt
 ///
 /// ## Symmetric Design
 ///
 /// The same infra-container code runs identically in both native and MicroVM
 /// modes. The only difference is the outer environment (host vs VM).
+///
+/// ## Usage (by external binary like workplane)
+///
+/// ```rust,ignore
+/// use magikrun::infra::{Infra, InfraExtension, InfraConfig};
+///
+/// struct MyExtension;
+/// impl InfraExtension for MyExtension { ... }
+///
+/// let mut infra = Infra::new(config);
+/// infra.register(MyExtension)?;
+/// infra.start().await?;
+/// ```
 pub mod infra;
-
-/// passt integration for MicroVM networking.
-///
-/// Provides TCP/UDP/ICMP networking for MicroVMs using passt:
-///
-/// - **TCP**: Control channel (exec/logs via control protocol)
-/// - **UDP**: Korium mesh networking (used by workplane)
-/// - **ICMP**: Health probes (ping)
-///
-/// This module provides:
-/// - `PasstConfig`: Port mapping configuration
-/// - `PasstInstance`: Running passt process management
-/// - `ControlClient`: Lightweight client for exec/logs operations
-///
-/// ## External Usage
-///
-/// Workplane uses this module to publish Korium sockets via passt
-/// when implementing `InfraExtension`.
-pub mod passt;

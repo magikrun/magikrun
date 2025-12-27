@@ -50,9 +50,6 @@
 //!     fn name(&self) -> &str { "workplane" }
 //!
 //!     async fn on_start(&mut self, ctx: &InfraContext) -> ExtensionResult<()> {
-//!         // Request Korium UDP port via passt
-//!         ctx.request_udp_port(51820, 51820, self.name()).await?;
-//!
 //!         self.wdht_client.connect().await?;
 //!         self.raft.join_cluster().await?;
 //!         Ok(())
@@ -70,22 +67,18 @@
 //! }
 //! ```
 //!
-//! ## Dynamic Port Mapping
+//! ## Port Mapping
 //!
-//! Extensions can request port mappings via passt at runtime:
-//!
-//! ```rust,ignore
-//! // In extension on_start():
-//! ctx.request_tcp_port(8080, 8080, "my-extension").await?;
-//! ctx.request_udp_port(51820, 51820, "korium").await?;
-//! ```
+//! Port mappings are defined statically in the PodSpec and configured at pod
+//! startup. This follows the atomic pod model where all configuration is known
+//! before any container starts.
 //!
 //! ## Security Considerations
 //!
 //! - Infra-container holds namespaces - app containers join, not create
 //! - Extensions run in same process - compile-time only, no plugins
 //! - Namespace isolation protects infra from app container compromise
-//! - Port mappings are bounded by `MAX_PORT_MAPPINGS` (64)
+//! - Port mappings are static (defined in PodSpec) - no runtime surprises
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -93,7 +86,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, instrument, warn};
 
 // ============================================================================
@@ -114,12 +107,6 @@ const EXTENSION_CALLBACK_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum number of containers that can be tracked.
 const MAX_TRACKED_CONTAINERS: usize = 256;
-
-/// Maximum number of dynamic port mappings per pod.
-pub const MAX_PORT_MAPPINGS: usize = 64;
-
-/// Channel buffer size for port requests.
-const PORT_REQUEST_CHANNEL_SIZE: usize = 16;
 
 // ============================================================================
 // ERROR TYPES
@@ -190,67 +177,6 @@ pub enum InfraError {
 
 /// Result type for Infra operations.
 pub type InfraResult<T> = Result<T, InfraError>;
-
-// ============================================================================
-// PORT MAPPING
-// ============================================================================
-
-/// Protocol for port mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortProtocol {
-    /// TCP port mapping.
-    Tcp,
-    /// UDP port mapping.
-    Udp,
-}
-
-impl std::fmt::Display for PortProtocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "TCP"),
-            Self::Udp => write!(f, "UDP"),
-        }
-    }
-}
-
-/// A request to map a port via passt.
-///
-/// Extensions send these to request dynamic port forwarding.
-#[derive(Debug, Clone)]
-pub struct PortRequest {
-    /// Protocol (TCP or UDP).
-    pub protocol: PortProtocol,
-    /// Port inside the guest/container.
-    pub guest_port: u16,
-    /// Port on the host (0 = auto-assign).
-    pub host_port: u16,
-    /// Requesting extension name.
-    pub requester: String,
-}
-
-impl PortRequest {
-    /// Create a TCP port request.
-    #[must_use]
-    pub fn tcp(guest_port: u16, host_port: u16, requester: impl Into<String>) -> Self {
-        Self {
-            protocol: PortProtocol::Tcp,
-            guest_port,
-            host_port,
-            requester: requester.into(),
-        }
-    }
-
-    /// Create a UDP port request.
-    #[must_use]
-    pub fn udp(guest_port: u16, host_port: u16, requester: impl Into<String>) -> Self {
-        Self {
-            protocol: PortProtocol::Udp,
-            guest_port,
-            host_port,
-            requester: requester.into(),
-        }
-    }
-}
 
 // ============================================================================
 // CONFIGURATION
@@ -383,8 +309,7 @@ pub enum InfraEvent {
 
 /// Context passed to extension callbacks.
 ///
-/// Provides access to pod information, inter-extension communication,
-/// and dynamic port registration via passt.
+/// Provides access to pod information and inter-extension communication.
 #[derive(Debug, Clone)]
 pub struct InfraContext {
     /// Pod unique identifier.
@@ -401,25 +326,17 @@ pub struct InfraContext {
 
     /// Current tracked containers (name -> id).
     containers: Arc<RwLock<HashMap<String, String>>>,
-
-    /// Channel to send port mapping requests to host.
-    port_request_tx: mpsc::Sender<PortRequest>,
-
-    /// Registered port mappings (for deduplication).
-    registered_ports: Arc<RwLock<Vec<PortRequest>>>,
 }
 
 impl InfraContext {
     /// Create a new context from config.
-    fn new(config: &InfraConfig, port_request_tx: mpsc::Sender<PortRequest>) -> Self {
+    fn new(config: &InfraConfig) -> Self {
         Self {
             pod_id: config.pod_id.clone(),
             pod_name: config.pod_name.clone(),
             namespace: config.namespace.clone(),
             pod_root: config.pod_root.clone(),
             containers: Arc::new(RwLock::new(HashMap::with_capacity(16))),
-            port_request_tx,
-            registered_ports: Arc::new(RwLock::new(Vec::with_capacity(16))),
         }
     }
 
@@ -451,114 +368,6 @@ impl InfraContext {
     async fn untrack_container(&self, name: &str) {
         let mut containers = self.containers.write().await;
         containers.remove(name);
-    }
-
-    // ========================================================================
-    // Port Mapping API
-    // ========================================================================
-
-    /// Request a TCP port mapping via passt.
-    ///
-    /// # Arguments
-    ///
-    /// * `guest_port` - Port inside the guest/container to forward.
-    /// * `host_port` - Port on the host to bind (0 = auto-assign).
-    /// * `requester` - Name of the extension requesting the port.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if too many ports registered or channel closed.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // In WorkplaneExtension::on_start():
-    /// ctx.request_tcp_port(8080, 8080, "workplane").await?;
-    /// ```
-    pub async fn request_tcp_port(
-        &self,
-        guest_port: u16,
-        host_port: u16,
-        requester: impl Into<String>,
-    ) -> InfraResult<()> {
-        self.request_port(PortRequest::tcp(guest_port, host_port, requester))
-            .await
-    }
-
-    /// Request a UDP port mapping via passt.
-    ///
-    /// # Arguments
-    ///
-    /// * `guest_port` - Port inside the guest/container to forward.
-    /// * `host_port` - Port on the host to bind (0 = auto-assign).
-    /// * `requester` - Name of the extension requesting the port.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if too many ports registered or channel closed.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // In WorkplaneExtension::on_start():
-    /// // Request Korium UDP port
-    /// ctx.request_udp_port(51820, 51820, "workplane").await?;
-    /// ```
-    pub async fn request_udp_port(
-        &self,
-        guest_port: u16,
-        host_port: u16,
-        requester: impl Into<String>,
-    ) -> InfraResult<()> {
-        self.request_port(PortRequest::udp(guest_port, host_port, requester))
-            .await
-    }
-
-    /// Internal: Send a port request.
-    async fn request_port(&self, request: PortRequest) -> InfraResult<()> {
-        // Check limit
-        let mut ports = self.registered_ports.write().await;
-        if ports.len() >= MAX_PORT_MAPPINGS {
-            return Err(InfraError::Internal(format!(
-                "too many port mappings (max: {MAX_PORT_MAPPINGS})"
-            )));
-        }
-
-        // Check for duplicate
-        let is_duplicate = ports
-            .iter()
-            .any(|p| p.protocol == request.protocol && p.guest_port == request.guest_port);
-        if is_duplicate {
-            debug!(
-                protocol = %request.protocol,
-                guest_port = request.guest_port,
-                "Port already registered, skipping"
-            );
-            return Ok(());
-        }
-
-        // Send request to host
-        self.port_request_tx
-            .send(request.clone())
-            .await
-            .map_err(|_| InfraError::Internal("port request channel closed".to_string()))?;
-
-        info!(
-            protocol = %request.protocol,
-            guest_port = request.guest_port,
-            host_port = request.host_port,
-            requester = %request.requester,
-            "Port mapping requested"
-        );
-
-        ports.push(request);
-        Ok(())
-    }
-
-    /// Get list of registered port mappings.
-    pub async fn registered_ports(&self) -> Vec<PortRequest> {
-        let ports = self.registered_ports.read().await;
-        ports.clone()
     }
 }
 
@@ -634,9 +443,6 @@ pub struct Infra {
 
     /// Running state.
     running: bool,
-
-    /// Receiver for port mapping requests from extensions.
-    port_request_rx: Option<mpsc::Receiver<PortRequest>>,
 }
 
 impl Infra {
@@ -650,40 +456,13 @@ impl Infra {
     ///
     /// A new `Infra` instance (not yet running).
     pub fn new(config: InfraConfig) -> Self {
-        let (tx, rx) = mpsc::channel(PORT_REQUEST_CHANNEL_SIZE);
-        let context = InfraContext::new(&config, tx);
+        let context = InfraContext::new(&config);
         Self {
             config,
             context,
             extensions: Vec::with_capacity(MAX_EXTENSIONS),
             running: false,
-            port_request_rx: Some(rx),
         }
-    }
-
-    /// Take the port request receiver.
-    ///
-    /// Returns the receiver for port mapping requests from extensions.
-    /// This should be called once by the host-side runtime (e.g., `MicroVmPodRuntime`)
-    /// to receive and process port mapping requests.
-    ///
-    /// # Returns
-    ///
-    /// The receiver, or `None` if already taken.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let mut infra = Infra::new(config);
-    /// let port_rx = infra.take_port_request_receiver().unwrap();
-    ///
-    /// // In host-side event loop:
-    /// while let Some(request) = port_rx.recv().await {
-    ///     passt.add_port_mapping(request.protocol, request.guest_port, request.host_port);
-    /// }
-    /// ```
-    pub fn take_port_request_receiver(&mut self) -> Option<mpsc::Receiver<PortRequest>> {
-        self.port_request_rx.take()
     }
 
     /// Register an extension.

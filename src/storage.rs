@@ -381,9 +381,38 @@ impl BlobStore {
         Ok(digests)
     }
 
-    /// Walks a directory recursively.
+    /// Walks a directory recursively with depth limiting.
+    ///
+    /// # Security
+    ///
+    /// The depth limit prevents stack overflow from:
+    /// - Symlink loops creating infinite recursion
+    /// - Extremely deep directory structures (malicious or accidental)
+    ///
+    /// Uses `MAX_WALK_DEPTH` from constants (default: 64 levels).
     fn walk_dir(dir: &Path, callback: &mut impl FnMut(&Path)) -> Result<()> {
+        use crate::constants::MAX_WALK_DEPTH;
+        Self::walk_dir_with_depth(dir, callback, 0, MAX_WALK_DEPTH)
+    }
+
+    /// Internal recursive directory walker with depth tracking.
+    fn walk_dir_with_depth(
+        dir: &Path,
+        callback: &mut impl FnMut(&Path),
+        current_depth: usize,
+        max_depth: usize,
+    ) -> Result<()> {
         if !dir.exists() {
+            return Ok(());
+        }
+
+        // SECURITY: Prevent stack overflow from deep/looping directory structures
+        if current_depth >= max_depth {
+            warn!(
+                "Directory walk depth limit ({}) reached at {}, skipping deeper entries",
+                max_depth,
+                dir.display()
+            );
             return Ok(());
         }
 
@@ -392,7 +421,7 @@ impl BlobStore {
             let path = entry.path();
 
             if path.is_dir() {
-                Self::walk_dir(&path, callback)?;
+                Self::walk_dir_with_depth(&path, callback, current_depth + 1, max_depth)?;
             } else {
                 callback(&path);
             }

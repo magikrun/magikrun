@@ -228,6 +228,18 @@ pub const EXEC_TIMEOUT: Duration = Duration::from_secs(300);
 /// while ensuring eventual timeout for stuck containers.
 pub const CONTAINER_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Timeout for layer extraction operations (10 minutes).
+///
+/// **Security**: Prevents indefinite hangs during layer extraction. A malicious
+/// Maximum directory traversal depth for filesystem operations.
+///
+/// **Security**: Prevents stack overflow from symlink loops or extremely
+/// deep directory structures during directory walks (e.g., GC, listing).
+///
+/// **Rationale**: 64 levels is deeper than any legitimate filesystem structure
+/// while preventing pathological cases.
+pub const MAX_WALK_DEPTH: usize = 64;
+
 // =============================================================================
 // Storage Paths
 // =============================================================================

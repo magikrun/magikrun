@@ -497,9 +497,14 @@ mod platform {
 
             // Force kill the child process if still running
             if force && let Some(child_pid) = container.child_pid {
-                // SAFETY: kill() is safe with valid PID
+                // SAFETY: kill() is safe to call with a valid PID. We own this child
+                // process (spawned by us), so the PID is valid. SIGKILL cannot be
+                // blocked or ignored, ensuring the process terminates.
                 unsafe { libc::kill(child_pid, libc::SIGKILL) };
-                // Wait for child to avoid zombie
+                // SAFETY: waitpid() is safe to call with a valid PID. WNOHANG ensures
+                // we don't block if the process hasn't exited yet. Passing null for
+                // status is valid when we don't need the exit status. This reaps the
+                // zombie to prevent PID table exhaustion.
                 unsafe { libc::waitpid(child_pid, std::ptr::null_mut(), libc::WNOHANG) };
             }
 

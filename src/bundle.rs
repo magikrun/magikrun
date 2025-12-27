@@ -88,10 +88,61 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tar::Archive;
 use tracing::{debug, info};
+
+// =============================================================================
+// Size-Limiting Reader Wrapper
+// =============================================================================
+
+/// A reader wrapper that limits the number of bytes that can be read.
+///
+/// # Security
+///
+/// This prevents compression bomb attacks where a small compressed file
+/// expands to a massive size during decompression, exhausting memory
+/// before the per-entry size tracking can detect it.
+///
+/// The limit is applied to the **decompressed** data stream.
+struct SizeLimitedReader<R> {
+    inner: R,
+    bytes_read: u64,
+    limit: u64,
+}
+
+impl<R: Read> SizeLimitedReader<R> {
+    fn new(inner: R, limit: u64) -> Self {
+        Self {
+            inner,
+            bytes_read: 0,
+            limit,
+        }
+    }
+}
+
+impl<R: Read> Read for SizeLimitedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Check if we've already exceeded the limit
+        if self.bytes_read >= self.limit {
+            return Err(io::Error::other(format!(
+                "decompression size limit exceeded: {} bytes",
+                self.limit
+            )));
+        }
+
+        // Limit the read to not exceed our remaining budget
+        let remaining = self.limit - self.bytes_read;
+        let max_read = buf.len().min(remaining as usize);
+
+        let bytes = self.inner.read(&mut buf[..max_read])?;
+        self.bytes_read += bytes as u64;
+
+        Ok(bytes)
+    }
+}
 
 /// Bundle format specifier for targeting specific runtimes.
 ///
@@ -278,13 +329,31 @@ impl BundleBuilder {
         }
     }
 
+    /// Valid namespace types for Linux namespaces.
+    ///
+    /// SECURITY: This allowlist prevents injection of arbitrary namespace types.
+    /// Only these known namespace types are permitted in config.json.
+    const VALID_NAMESPACE_TYPES: &'static [&'static str] = &[
+        "pid", "network", "net", "ipc", "uts", "mount", "mnt", "cgroup", "user",
+    ];
+
     /// Validates a namespace path matches the expected /proc/<pid>/ns/<type> format.
     ///
     /// # Security
     ///
     /// This prevents namespace injection attacks where a malicious caller could
     /// pass arbitrary paths that would be injected into config.json.
+    ///
+    /// Validation includes:
+    /// - Path format: `/proc/<pid>/ns/<type>`
+    /// - PID is a valid positive integer
+    /// - Namespace type is in the explicit allowlist
     fn is_valid_namespace_path(path: &str, ns_type: &str) -> bool {
+        // SECURITY: First validate that ns_type is in our allowlist
+        if !Self::VALID_NAMESPACE_TYPES.contains(&ns_type) {
+            return false;
+        }
+
         // Expected format: /proc/<pid>/ns/<type>
         // Where <pid> is a positive integer and <type> matches the namespace type
         let parts: Vec<&str> = path.split('/').collect();
@@ -298,9 +367,13 @@ impl BundleBuilder {
             && parts[2].chars().all(|c| c.is_ascii_digit())
             && !parts[2].is_empty()
             && parts[3] == "ns"
-            && (parts[4] == ns_type || Self::namespace_type_alias(parts[4]) == ns_type)
         {
-            return true;
+            // SECURITY: Validate the path's namespace type is also in allowlist
+            if !Self::VALID_NAMESPACE_TYPES.contains(&parts[4]) {
+                return false;
+            }
+            // Check that the path type matches the requested type (or its alias)
+            return parts[4] == ns_type || Self::namespace_type_alias(parts[4]) == ns_type;
         }
         false
     }
@@ -827,6 +900,7 @@ impl BundleBuilder {
                     action: "SCMP_ACT_ALLOW".to_string(),
                 },
             ],
+            listener_path: None,
         }
     }
 
@@ -1098,22 +1172,28 @@ pub struct OciCapabilities {
     pub ambient: Vec<String>,
 }
 
-/// OCI seccomp profile for syscall filtering.
+/// OCI seccomp configuration.
 ///
-/// SECURITY: Restricts which syscalls a container can invoke.
-/// This provides defense-in-depth by reducing the kernel attack surface.
+/// SECURITY: Defines a syscall filtering policy to reduce kernel attack surface.
+/// Uses an allowlist approach where `default_action` is typically SCMP_ACT_ERRNO
+/// and allowed syscalls are listed explicitly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OciSeccomp {
-    /// Default action when no rule matches.
-    /// SECURITY: Should be SCMP_ACT_ERRNO for deny-by-default profiles.
+    /// Default action when syscall not in any rule (e.g., "SCMP_ACT_ERRNO").
     pub default_action: String,
     /// Architectures this profile applies to.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub architectures: Vec<String>,
-    /// Syscall rules.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Syscall rules (allowlist).
+    #[serde(default)]
     pub syscalls: Vec<OciSeccompSyscall>,
+    /// Path to seccomp notification listener socket.
+    ///
+    /// When set, syscalls with action "SCMP_ACT_NOTIFY" will send notifications
+    /// to this socket instead of blocking. Used for bypass4netns socket bypass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listener_path: Option<String>,
 }
 
 /// Individual syscall rule in a seccomp profile.
@@ -1189,20 +1269,33 @@ pub fn extract_layers_to_rootfs(
             });
         }
 
-        // Decompress and extract
+        // SECURITY: Calculate remaining size budget for this layer.
+        // This prevents compression bombs where a small compressed file
+        // expands to exhaust memory before per-entry size tracking kicks in.
+        let remaining_budget = MAX_ROOTFS_SIZE.saturating_sub(total_size);
+
+        // Decompress with size limiting to prevent memory exhaustion
         let decoder = GzDecoder::new(&data[..]);
-        let mut archive = Archive::new(decoder);
+        let size_limited = SizeLimitedReader::new(decoder, remaining_budget);
+        let mut archive = Archive::new(size_limited);
 
         // SECURITY: Track file count to prevent inode exhaustion attacks
         let mut file_count = 0usize;
 
-        for entry in archive
-            .entries()
-            .map_err(|e| Error::LayerExtractionFailed {
+        for entry in archive.entries().map_err(|e| {
+            // Check if this was a size limit error
+            let reason = e.to_string();
+            if reason.contains("decompression size limit exceeded") {
+                return Error::ImageTooLarge {
+                    size: total_size + remaining_budget,
+                    limit: MAX_ROOTFS_SIZE,
+                };
+            }
+            Error::LayerExtractionFailed {
                 digest: layer.digest.clone(),
-                reason: e.to_string(),
-            })?
-        {
+                reason,
+            }
+        })? {
             // SECURITY: Check file count before processing each entry
             file_count += 1;
             if file_count > MAX_FILES_PER_LAYER {
@@ -1212,9 +1305,19 @@ pub fn extract_layers_to_rootfs(
                 )));
             }
 
-            let mut entry = entry.map_err(|e| Error::LayerExtractionFailed {
-                digest: layer.digest.clone(),
-                reason: e.to_string(),
+            let mut entry = entry.map_err(|e| {
+                // Check if this was a size limit error
+                let reason = e.to_string();
+                if reason.contains("decompression size limit exceeded") {
+                    return Error::ImageTooLarge {
+                        size: total_size + remaining_budget,
+                        limit: MAX_ROOTFS_SIZE,
+                    };
+                }
+                Error::LayerExtractionFailed {
+                    digest: layer.digest.clone(),
+                    reason,
+                }
             })?;
 
             let path = entry.path().map_err(|e| Error::LayerExtractionFailed {
@@ -1379,8 +1482,18 @@ pub fn extract_layers_to_rootfs(
                 // SECURITY: For hardlinks, verify the target stays within rootfs bounds.
                 // Hardlinks can only point to existing files, but a malicious archive
                 // could reference files created earlier in the same archive to escape.
+                //
+                // ADDITIONAL SECURITY: We also check if the resolved target path is a
+                // symlink. If so, we reject it because a hardlink to a symlink could
+                // effectively create a hardlink to a file outside rootfs:
+                //   1. Archive creates symlink "link" -> "/etc/passwd" (appears safe as relative depth check passes)
+                //   2. Archive creates hardlink "evil" -> "link" (hardlink to the symlink)
+                //   3. On extraction, hardlink might bypass the symlink's own validation
+                //
+                // By rejecting hardlinks to symlinks, we eliminate this attack vector.
                 if entry_type.is_hard_link() {
-                    if target_str.starts_with('/') {
+                    // Compute the target path within rootfs
+                    let resolved_target = if target_str.starts_with('/') {
                         // Absolute hardlink target - verify it's within rootfs bounds
                         let target_in_rootfs = rootfs.join(target_str.trim_start_matches('/'));
                         if !target_in_rootfs.starts_with(rootfs) {
@@ -1388,6 +1501,7 @@ pub fn extract_layers_to_rootfs(
                                 path: format!("hardlink target escapes rootfs: {}", target_str),
                             });
                         }
+                        target_in_rootfs
                     } else {
                         // SECURITY: Relative hardlinks need the same depth-tracking validation
                         // as symlinks. A hardlink like "../../../etc/passwd" would escape rootfs.
@@ -1422,7 +1536,30 @@ pub fn extract_layers_to_rootfs(
                                 _ => {}
                             }
                         }
+
+                        // Compute the resolved path within rootfs
+                        rootfs.join(entry_parent).join(target.as_ref())
+                    };
+
+                    // SECURITY: Reject hardlinks to symlinks to prevent escape via indirection.
+                    // A symlink created earlier in the archive might point outside rootfs,
+                    // and hardlinking to it would allow creating a hardlink that escapes.
+                    //
+                    // We use symlink_metadata() to check the link type without following it.
+                    if let Ok(meta) = fs::symlink_metadata(&resolved_target)
+                        && meta.file_type().is_symlink()
+                    {
+                        return Err(Error::PathTraversal {
+                            path: format!(
+                                "hardlink '{}' targets a symlink '{}' (potential escape vector)",
+                                path.display(),
+                                target_str
+                            ),
+                        });
                     }
+                    // Note: If the target doesn't exist yet, we allow it - tar will fail
+                    // naturally when trying to create the hardlink. We only reject when
+                    // we can positively identify a symlink target.
                 }
             }
 

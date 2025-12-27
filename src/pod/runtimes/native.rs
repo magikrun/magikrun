@@ -1,43 +1,46 @@
-//! Native pod runtime using youki + pause container.
+//! Native pod runtime using pasta + infra-container pattern.
 //!
 //! This runtime creates pods using native Linux containers with the
-//! pause container pattern for namespace sharing.
+//! pasta infra-container pattern for namespace sharing.
 //!
 //! # Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │  Pod (NativePodRuntime)                                        │
+//! │  Pod (NativePodRuntime)                                         │
 //! │                                                                 │
 //! │  ┌───────────────────────────────────────────────────────────┐  │
-//! │  │  Named Namespaces (created before any container)          │  │
-//! │  │  /run/magik/ns/pod-{id}-{net,ipc,uts}                     │  │
+//! │  │  pasta (creates netns, port forwarding)                   │  │
+//! │  │   └─► infra-binary (external, e.g., workplane)            │  │
+//! │  │        ├─ Infra instance (from magikrun)                  │  │
+//! │  │        ├─ Extensions (from external crate)                │  │
+//! │  │        └─ holds namespaces for app containers             │  │
 //! │  └───────────────────────────────────────────────────────────┘  │
-//! │         ▲           ▲           ▲           ▲                   │
-//! │         │           │           │           │ (join namespaces) │
-//! │  ┌──────┴──┐  ┌─────┴───┐  ┌────┴────┐  ┌───┴─────┐            │
-//! │  │ Pause  │  │Container│  │Container│  │Container│            │
-//! │  │Container│  │   A     │  │   B     │  │   C     │            │
-//! │  └─────────┘  └─────────┘  └─────────┘  └─────────┘            │
+//! │         ▲           ▲           ▲                               │
+//! │         │ (join)    │ (join)    │ (join)                        │
+//! │  ┌──────┴──┐  ┌─────┴───┐  ┌────┴────┐                          │
+//! │  │Container│  │Container│  │Container│                          │
+//! │  │   A     │  │   B     │  │   C     │                          │
+//! │  └─────────┘  └─────────┘  └─────────┘                          │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! # Named Namespaces for True Atomicity
+//! # 2-Process Architecture
 //!
-//! Unlike the pause-container-first approach (where namespace paths depend on
-//! pause PID), we create **named namespaces** upfront. This enables:
+//! Unlike the old 3-process model (unshare + pasta + pause), this uses:
+//! 1. `pasta`: Creates netns, handles port forwarding, wraps infra binary
+//! 2. `infra-binary`: External binary (e.g., workplane) that holds namespaces
 //!
-//! 1. **Full atomicity**: All bundles built in PHASE 1 before any container starts
-//! 2. **Predictable paths**: `/run/magik/ns/pod-{id}-{net,ipc,uts}`
-//! 3. **Clean rollback**: Namespaces deleted on failure, no orphaned resources
+//! Benefits:
+//! - Correct dependency semantics (pasta parent → infra dies if pasta dies)
+//! - Simpler process tree
+//! - Extensions run inside infra binary
 //!
 //! # Atomic Deployment
 //!
-//! Unlike the old CRI model (RunPodSandbox → CreateContainer → StartContainer),
 //! `run_pod()` is atomic:
-//!
-//! 1. **Prepare Phase**: Create namespaces, pull images, build ALL bundles
-//! 2. **Commit Phase**: Start pause container, start all workloads
+//! 1. **Prepare Phase**: Spawn infra-container, pull images, build ALL bundles
+//! 2. **Commit Phase**: Start all workload containers
 //! 3. **Rollback on failure**: Delete everything if any step fails
 //!
 //! The caller never sees intermediate states.
@@ -48,35 +51,262 @@ use crate::pod::{
     ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase, PodRuntime, PodSpec,
     PodStatus, PodSummary,
 };
+use crate::portforwarder::{PortMapping, Protocol, extract_port_mappings};
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use tokio::process::{Child, Command};
+use tokio::time::timeout;
+use tracing::{debug, info, warn};
 
 use crate::pod::runtime_base_path;
 
 /// Subdirectory for pod bundles under the base path.
 const PODS_SUBDIR: &str = "pods";
 
-/// Directory for named namespaces.
-const NAMESPACE_DIR: &str = "/run/magik/ns";
-
 /// Poll interval when waiting for container stop (milliseconds).
 const STOP_POLL_INTERVAL_MS: u64 = 100;
 
-/// Namespace types shared by pod containers.
-/// These are created as named namespaces before any container starts.
-const SHARED_NAMESPACE_TYPES: &[(&str, &str)] = &[
-    ("network", "net"), // Shared pod IP address and ports
-    ("ipc", "ipc"),     // Shared System V IPC and POSIX message queues
-    ("uts", "uts"),     // Shared hostname
-];
+// ============================================================================
+// INFRA-CONTAINER CONSTANTS
+// ============================================================================
+
+/// Default timeout for infra binary to write its PID file.
+const INFRA_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll interval when waiting for PID file.
+const PID_FILE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Default path to infra-container binary.
+///
+/// This is an external binary (e.g., from the workplane crate) that implements
+/// `InfraExtension`. Can be overridden via `MAGIK_INFRA_BINARY_PATH` env var.
+const DEFAULT_INFRA_BINARY_PATH: &str = "/usr/libexec/magik/workplane";
+
+/// Maximum PID file size (sanity check).
+const MAX_PID_FILE_SIZE: u64 = 32;
+
+// ============================================================================
+// INFRA-CONTAINER (pasta + external binary)
+// ============================================================================
+
+/// Infra-container that spawns pasta wrapping an external binary.
+///
+/// This manages the lifecycle of:
+/// - `pasta`: Creates network namespace, handles port forwarding
+/// - External binary (e.g., workplane): Runs inside pasta's netns, holds namespaces
+///
+/// App containers join `/proc/{infra_pid}/ns/net` to share networking.
+struct InfraContainer {
+    /// Pasta child process (we spawn this, it spawns the infra binary).
+    pasta_child: Child,
+
+    /// PID of infra binary (pasta's child) - discovered via PID file.
+    infra_pid: u32,
+
+    /// Path to PID file (for cleanup).
+    pid_file_path: PathBuf,
+}
+
+impl InfraContainer {
+    /// Spawns the infra-container (pasta wrapping external binary).
+    ///
+    /// # Arguments
+    ///
+    /// * `pod_id` - Pod identifier
+    /// * `pod_name` - Pod name for logging
+    /// * `namespace` - Pod namespace
+    /// * `pod_root` - Path to pod directory
+    /// * `port_mappings` - Ports to forward via pasta
+    async fn spawn(
+        pod_id: &str,
+        pod_name: &str,
+        namespace: &str,
+        pod_root: &Path,
+        port_mappings: &[PortMapping],
+    ) -> Result<Self> {
+        // Resolve infra binary path
+        let infra_binary = std::env::var("MAGIK_INFRA_BINARY_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_INFRA_BINARY_PATH));
+
+        if !infra_binary.exists() {
+            return Err(Error::Internal(format!(
+                "infra binary not found at {}",
+                infra_binary.display()
+            )));
+        }
+
+        let pid_file_path = pod_root.join("infra.pid");
+
+        // Clean up stale PID file if exists
+        let _ = tokio::fs::remove_file(&pid_file_path).await;
+
+        // Build pasta command: pasta [port_args] --config-net -- infra_binary [args]
+        let mut cmd = Command::new("pasta");
+
+        // Add port mappings
+        for mapping in port_mappings {
+            match mapping.protocol {
+                Protocol::Tcp => {
+                    cmd.arg("-t");
+                    cmd.arg(format!("{}:{}", mapping.host_port, mapping.container_port));
+                }
+                Protocol::Udp => {
+                    cmd.arg("-u");
+                    cmd.arg(format!("{}:{}", mapping.host_port, mapping.container_port));
+                }
+            }
+        }
+
+        // Auto-configure networking in the new netns
+        cmd.arg("--config-net");
+
+        // Separator
+        cmd.arg("--");
+
+        // Infra binary command with arguments
+        cmd.arg(&infra_binary);
+        cmd.arg("--pod-id").arg(pod_id);
+        cmd.arg("--pod-name").arg(pod_name);
+        cmd.arg("--namespace").arg(namespace);
+        cmd.arg("--pid-file").arg(&pid_file_path);
+        cmd.arg("--pod-root").arg(pod_root);
+
+        info!(
+            pod_id = %pod_id,
+            infra_binary = %infra_binary.display(),
+            port_count = port_mappings.len(),
+            "Spawning pasta infra-container"
+        );
+
+        // Spawn pasta (which spawns infra binary as its child)
+        let pasta_child = cmd
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| Error::Internal(format!("failed to spawn pasta: {e}")))?;
+
+        debug!(
+            pod_id = %pod_id,
+            pasta_pid = ?pasta_child.id(),
+            "Pasta process spawned, waiting for infra PID file"
+        );
+
+        // Wait for infra binary to write its PID file
+        let infra_pid = Self::wait_for_pid_file(&pid_file_path, INFRA_STARTUP_TIMEOUT).await?;
+
+        info!(
+            pod_id = %pod_id,
+            pasta_pid = ?pasta_child.id(),
+            infra_pid = infra_pid,
+            "Infra-container ready"
+        );
+
+        Ok(Self {
+            pasta_child,
+            infra_pid,
+            pid_file_path,
+        })
+    }
+
+    /// Waits for the PID file to be written and reads the PID.
+    async fn wait_for_pid_file(path: &Path, timeout_duration: Duration) -> Result<u32> {
+        let result = timeout(timeout_duration, async {
+            loop {
+                match tokio::fs::metadata(path).await {
+                    Ok(meta) if meta.len() > 0 && meta.len() < MAX_PID_FILE_SIZE => {
+                        match tokio::fs::read_to_string(path).await {
+                            Ok(content) => {
+                                let trimmed = content.trim();
+                                if !trimmed.is_empty() {
+                                    return trimmed.parse::<u32>().map_err(|_| {
+                                        Error::Internal(format!("invalid PID in file: {trimmed}"))
+                                    });
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(PID_FILE_POLL_INTERVAL).await;
+            }
+        })
+        .await;
+
+        match result {
+            Ok(pid_result) => pid_result,
+            Err(_) => Err(Error::Internal(format!(
+                "infra startup timed out after {timeout_duration:?}"
+            ))),
+        }
+    }
+
+    /// Returns namespace paths for app containers to join.
+    fn namespace_paths(&self) -> HashMap<String, PathBuf> {
+        let mut paths = HashMap::new();
+        paths.insert(
+            "network".to_string(),
+            PathBuf::from(format!("/proc/{}/ns/net", self.infra_pid)),
+        );
+        paths.insert(
+            "ipc".to_string(),
+            PathBuf::from(format!("/proc/{}/ns/ipc", self.infra_pid)),
+        );
+        paths.insert(
+            "uts".to_string(),
+            PathBuf::from(format!("/proc/{}/ns/uts", self.infra_pid)),
+        );
+        paths
+    }
+
+    /// Shuts down the infra-container.
+    async fn shutdown(&mut self, grace_period: Duration) {
+        // Send SIGTERM first
+        #[cfg(unix)]
+        if let Some(pid) = self.pasta_child.id() {
+            // SAFETY: Sending signal to our own child process
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+
+        // Wait for graceful shutdown
+        let graceful = timeout(grace_period, self.pasta_child.wait()).await;
+
+        if graceful.is_err() {
+            warn!("Graceful shutdown timed out, sending SIGKILL");
+            let _ = self.pasta_child.kill().await;
+        }
+
+        // Clean up PID file
+        let _ = tokio::fs::remove_file(&self.pid_file_path).await;
+    }
+}
+
+impl Drop for InfraContainer {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pasta_child.id() {
+            // SAFETY: Sending signal to our own child process
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// POD RUNTIME
+// ============================================================================
 
 /// Native pod runtime using Linux containers.
 ///
-/// Implements atomic pod deployment with namespace sharing via pause containers.
+/// Implements atomic pod deployment with the pasta infra-container pattern.
 /// Only available on Linux with cgroup v2.
 pub struct NativePodRuntime {
     /// OCI runtime for container operations.
@@ -93,16 +323,12 @@ pub struct NativePodRuntime {
 struct PodState {
     /// Pod specification (immutable after creation).
     spec: PodSpec,
-    /// Pause container ID.
-    pause_container_id: String,
-    /// Pause container PID (for monitoring).
-    pause_pid: Option<u32>,
+    /// Infra-container (pasta + external binary).
+    infra: Option<InfraContainer>,
     /// Workload container IDs (name → container ID).
     containers: HashMap<String, String>,
     /// Bundle paths (for cleanup).
     bundle_paths: Vec<PathBuf>,
-    /// Named namespace paths (for cleanup).
-    namespace_paths: HashMap<String, PathBuf>,
     /// Current phase.
     phase: PodPhase,
     /// Started timestamp.
@@ -310,6 +536,17 @@ impl NativePodRuntime {
 
     /// Cleans up all resources for a failed pod deployment.
     async fn cleanup_failed_pod(&self, state: &PodState) {
+        // Kill pasta daemon if running
+        if let Some(ref child) = state.pasta_child {
+            // Use kill(2) to terminate the pasta process
+            // SAFETY: We're sending SIGKILL to our own child process
+            #[cfg(unix)]
+            unsafe {
+                let _ = libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
+            }
+            tracing::debug!("Killed pasta daemon (pid: {})", child.id());
+        }
+
         // Delete all workload containers
         for container_id in state.containers.values() {
             let _ = self.runtime.kill(container_id, Signal::Kill, true).await;
@@ -367,6 +604,7 @@ impl PodRuntime for NativePodRuntime {
                     spec: spec.clone(),
                     pause_container_id: String::new(),
                     pause_pid: None,
+                    pasta_child: None,
                     containers: HashMap::new(),
                     bundle_paths: Vec::new(),
                     namespace_paths: HashMap::new(),
@@ -389,6 +627,7 @@ impl PodRuntime for NativePodRuntime {
             spec: spec.clone(),
             pause_container_id: format!("{}-pause", pod_id.as_str()),
             pause_pid: None,
+            pasta_child: None,
             containers: HashMap::new(),
             bundle_paths: vec![pod_dir.clone()],
             namespace_paths: HashMap::new(),
@@ -412,7 +651,45 @@ impl PodRuntime for NativePodRuntime {
         };
         state.namespace_paths = namespace_paths.clone();
 
-        // Step 1.2: Build pause container bundle with namespace joining
+        // Step 1.2: Spawn pasta daemon for port forwarding (if ports configured).
+        // Pasta attaches to the named network namespace and provides port forwarding
+        // for all containers in the pod. This is implicit with the infra-container.
+        let port_mappings = extract_port_mappings(&spec.containers);
+        if !port_mappings.is_empty() {
+            // Get the network namespace path
+            if let Some(netns_path) = namespace_paths.get("network") {
+                let forwarder = PastaForwarder::new().with_netns(netns_path);
+                let mut forwarder = forwarder;
+                if let Err(e) = forwarder.add_ports(&port_mappings) {
+                    tracing::warn!(
+                        pod = %pod_id,
+                        error = %e,
+                        "Failed to configure port mappings, port forwarding disabled"
+                    );
+                } else {
+                    match forwarder.spawn_daemon() {
+                        Ok(child) => {
+                            tracing::info!(
+                                pod = %pod_id,
+                                port_count = port_mappings.len(),
+                                netns = %netns_path.display(),
+                                "Spawned pasta daemon for pod port forwarding (infra-implicit)"
+                            );
+                            state.pasta_child = Some(child);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                pod = %pod_id,
+                                error = %e,
+                                "Failed to spawn pasta daemon, port forwarding disabled"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 1.3: Build pause container bundle with namespace joining
         let pause_bundle = pod_dir.join("pause");
         let pause_rootfs = pause_bundle.join("rootfs");
         if let Err(e) = std::fs::create_dir_all(&pause_rootfs) {
@@ -426,7 +703,7 @@ impl PodRuntime for NativePodRuntime {
         // The pause container ALSO joins the named namespaces (it doesn't create them)
         state.bundle_paths.push(pause_bundle.clone());
 
-        // Step 1.3: Pull all images and build ALL bundles with namespace paths
+        // Step 1.4: Pull all images and build ALL bundles with namespace paths
         use crate::image::Bundle;
         let mut prepared_containers: Vec<(String, Bundle)> = Vec::new();
 
@@ -459,13 +736,17 @@ impl PodRuntime for NativePodRuntime {
                 full_command.extend(args.clone());
             }
 
+            // No pasta wrapping needed - pasta runs as a daemon attached to the
+            // network namespace, providing port forwarding for all containers.
+            let final_command = if full_command.is_empty() {
+                None
+            } else {
+                Some(full_command)
+            };
+
             let config = OciContainerConfig {
                 name: container_spec.name.clone(),
-                command: if full_command.is_empty() {
-                    None
-                } else {
-                    Some(full_command)
-                },
+                command: final_command,
                 env: container_spec.env.clone(),
                 working_dir: container_spec.working_dir.clone(),
                 user_id: None,
@@ -498,7 +779,7 @@ impl PodRuntime for NativePodRuntime {
         tracing::info!(
             pod = %pod_id,
             container_count = prepared_containers.len(),
-            "PHASE 1 complete: all images pulled, all bundles built"
+            "PHASE 1 complete: all images pulled, all bundles built (pasta bypass integrated)"
         );
 
         // =========================================================================
@@ -667,6 +948,15 @@ impl PodRuntime for NativePodRuntime {
             pods.remove(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?
         };
+
+        // Kill pasta daemon if running
+        if let Some(ref child) = state.pasta_child {
+            #[cfg(unix)]
+            unsafe {
+                let _ = libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
+            }
+            tracing::debug!(pod = %id, pid = child.id(), "Killed pasta daemon");
+        }
 
         // Delete all workload containers
         for container_id in state.containers.values() {

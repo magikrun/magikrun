@@ -342,6 +342,7 @@ fn test_bundle_microvm_clone() {
 #[test]
 fn test_valid_namespace_path_format() {
     // Valid paths should follow /proc/<pid>/ns/<type>
+    // AND the namespace type must be in the allowlist
     let valid_paths = [
         "/proc/1/ns/net",
         "/proc/12345/ns/ipc",
@@ -350,6 +351,13 @@ fn test_valid_namespace_path_format() {
         "/proc/1/ns/pid",
         "/proc/1/ns/user",
         "/proc/1/ns/cgroup",
+        "/proc/1/ns/network", // alias for net
+        "/proc/1/ns/mount",   // alias for mnt
+    ];
+
+    // Valid namespace types from the allowlist
+    let valid_ns_types = [
+        "pid", "network", "net", "ipc", "uts", "mount", "mnt", "cgroup", "user",
     ];
 
     for path in valid_paths {
@@ -362,6 +370,39 @@ fn test_valid_namespace_path_format() {
             "pid should be digits"
         );
         assert_eq!(parts[3], "ns");
+        assert!(
+            valid_ns_types.contains(&parts[4]),
+            "namespace type {} must be in allowlist",
+            parts[4]
+        );
+    }
+}
+
+#[test]
+fn test_invalid_namespace_types_rejected() {
+    // These namespace types should be rejected as they're not in the allowlist
+    let invalid_ns_types = [
+        "invalid",
+        "time", // time_ns is not supported
+        "time_for_children",
+        "custom",
+        "exec",
+        "bind",
+        "../net",      // path traversal in ns type
+        "net; rm -rf", // command injection
+        "",            // empty
+    ];
+
+    for ns_type in invalid_ns_types {
+        // These should NOT be in the valid namespace type list
+        let valid_ns_types = [
+            "pid", "network", "net", "ipc", "uts", "mount", "mnt", "cgroup", "user",
+        ];
+        assert!(
+            !valid_ns_types.contains(&ns_type),
+            "namespace type '{}' should NOT be in allowlist",
+            ns_type.escape_debug()
+        );
     }
 }
 
