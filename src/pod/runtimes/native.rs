@@ -302,16 +302,16 @@ impl InfraContainer {
     async fn wait_for_pid_file(path: &Path, timeout_duration: Duration) -> Result<u32> {
         let result = timeout(timeout_duration, async {
             loop {
-                if let Ok(meta) = tokio::fs::metadata(path).await {
-                    if meta.len() > 0 && meta.len() < MAX_PID_FILE_SIZE {
-                        if let Ok(content) = tokio::fs::read_to_string(path).await {
-                            let trimmed = content.trim();
-                            if !trimmed.is_empty() {
-                                return trimmed.parse::<u32>().map_err(|_| {
-                                    Error::Internal(format!("invalid PID in file: {trimmed}"))
-                                });
-                            }
-                        }
+                if let Ok(meta) = tokio::fs::metadata(path).await
+                    && meta.len() > 0
+                    && meta.len() < MAX_PID_FILE_SIZE
+                    && let Ok(content) = tokio::fs::read_to_string(path).await
+                {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.parse::<u32>().map_err(|_| {
+                            Error::Internal(format!("invalid PID in file: {trimmed}"))
+                        });
                     }
                 }
                 tokio::time::sleep(PID_FILE_POLL_INTERVAL).await;
