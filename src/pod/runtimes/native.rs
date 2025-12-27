@@ -530,8 +530,9 @@ impl PodRuntime for NativePodRuntime {
         let port_mappings = extract_port_mappings(&spec.containers);
 
         // Step 1.2: Spawn infra-container (pasta + infra binary)
+        let pod_id_str = pod_id.as_str();
         let infra = match InfraContainer::spawn(
-            pod_id.as_str(),
+            &pod_id_str,
             &spec.name,
             &spec.namespace,
             &pod_dir,
