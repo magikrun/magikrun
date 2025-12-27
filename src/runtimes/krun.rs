@@ -311,25 +311,23 @@ mod platform {
             // SECURITY: Find the magikrun binary using secure paths only.
             // We do NOT search PATH to prevent injection attacks where an attacker
             // with PATH control could substitute a malicious binary.
-            let magikrun_path = std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    // If we ARE magikrun, use our own path
-                    if exe.file_name().is_some_and(|n| n == "magikrun") {
-                        return Some(exe);
-                    }
-                    // Try same directory as current exe
-                    exe.parent()
-                        .map(|d| d.join("magikrun"))
-                        .filter(|p| p.exists())
-                        // Try parent directory (if exe is in deps/)
-                        .or_else(|| {
-                            exe.parent()
-                                .and_then(|d| d.parent())
-                                .map(|d| d.join("magikrun"))
-                                .filter(|p| p.exists())
-                        })
-                });
+            let magikrun_path = std::env::current_exe().ok().and_then(|exe| {
+                // If we ARE magikrun, use our own path
+                if exe.file_name().is_some_and(|n| n == "magikrun") {
+                    return Some(exe);
+                }
+                // Try same directory as current exe
+                exe.parent()
+                    .map(|d| d.join("magikrun"))
+                    .filter(|p| p.exists())
+                    // Try parent directory (if exe is in deps/)
+                    .or_else(|| {
+                        exe.parent()
+                            .and_then(|d| d.parent())
+                            .map(|d| d.join("magikrun"))
+                            .filter(|p| p.exists())
+                    })
+            });
 
             // SECURITY: Only use CARGO_TARGET_DIR in debug builds (development).
             // In production/release builds, this path is skipped to prevent

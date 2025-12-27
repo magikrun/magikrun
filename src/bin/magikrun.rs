@@ -198,9 +198,7 @@ struct ContainerState {
 }
 
 fn state_path(id: &str) -> PathBuf {
-    default_state_root()
-        .join(id)
-        .join("state.json")
+    default_state_root().join(id).join("state.json")
 }
 
 fn load_state(id: &str) -> Result<ContainerState, String> {

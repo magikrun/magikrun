@@ -557,7 +557,9 @@ mod tests {
         );
 
         // After untracking one, should accept again
-        store.untrack_inflight("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        store.untrack_inflight(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        );
         assert!(
             store.track_inflight(&overflow_digest),
             "Should accept after untrack"
@@ -588,9 +590,15 @@ mod tests {
         let stats = store.gc(&[]).unwrap();
 
         // digest1 should still exist (protected by inflight)
-        assert!(store.has_blob(&digest1), "Inflight blob should be protected from GC");
+        assert!(
+            store.has_blob(&digest1),
+            "Inflight blob should be protected from GC"
+        );
         // digest2 should be deleted
-        assert!(!store.has_blob(&digest2), "Unreferenced blob should be deleted");
+        assert!(
+            !store.has_blob(&digest2),
+            "Unreferenced blob should be deleted"
+        );
         // Stats should show we removed 1 blob
         assert_eq!(stats.removed_count, 1);
 

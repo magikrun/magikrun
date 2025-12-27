@@ -385,13 +385,7 @@ impl OciRuntime for WasmtimeRuntime {
 
         tokio::spawn(async move {
             let result = Self::run_module(
-                &engine,
-                &module,
-                &bundle,
-                &wasi_args,
-                &wasi_env,
-                &wasi_dirs,
-                fuel_limit,
+                &engine, &module, &bundle, &wasi_args, &wasi_env, &wasi_dirs, fuel_limit,
             );
 
             // Update container state with exit code
@@ -622,7 +616,12 @@ impl WasmtimeRuntime {
     #[allow(clippy::type_complexity)] // Internal helper - tuple matches WasmContainer fields directly
     fn load_wasi_config(
         bundle: &Path,
-    ) -> Option<(Vec<String>, Vec<(String, String)>, Vec<(String, String)>, Option<u64>)> {
+    ) -> Option<(
+        Vec<String>,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+        Option<u64>,
+    )> {
         let config_path = bundle.join("wasi.json");
         if !config_path.exists() {
             return None;
@@ -642,7 +641,11 @@ impl WasmtimeRuntime {
         let content = match std::fs::read_to_string(&config_path) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Failed to read wasi.json at {}: {}", config_path.display(), e);
+                warn!(
+                    "Failed to read wasi.json at {}: {}",
+                    config_path.display(),
+                    e
+                );
                 return None;
             }
         };

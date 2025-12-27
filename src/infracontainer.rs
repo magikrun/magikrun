@@ -93,7 +93,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, instrument, warn};
 
 // ============================================================================

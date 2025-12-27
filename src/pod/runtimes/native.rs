@@ -159,17 +159,19 @@ impl NativePodRuntime {
     fn create_named_namespaces(pod_id: &PodId) -> Result<HashMap<String, PathBuf>> {
         use std::fs::{self, File};
         use std::os::unix::fs::OpenOptionsExt;
-        
+
         // Ensure namespace directory exists
         fs::create_dir_all(NAMESPACE_DIR).map_err(|e| {
-            Error::Internal(format!("failed to create namespace directory {NAMESPACE_DIR}: {e}"))
+            Error::Internal(format!(
+                "failed to create namespace directory {NAMESPACE_DIR}: {e}"
+            ))
         })?;
 
         let mut paths = HashMap::new();
 
         for (ns_type, ns_file) in SHARED_NAMESPACE_TYPES {
             let ns_path = PathBuf::from(format!("{NAMESPACE_DIR}/{}-{}", pod_id.as_str(), ns_file));
-            
+
             // Create empty file for bind mount target
             File::options()
                 .write(true)
@@ -192,7 +194,7 @@ impl NativePodRuntime {
             // This is done in a child process so the parent doesn't change namespaces
             let ns_path_clone = ns_path.clone();
             let ns_file_str = *ns_file;
-            
+
             // SAFETY: We're forking and the child immediately execs or exits.
             // The child doesn't share memory with parent after fork on Linux.
             let result = std::process::Command::new("unshare")
@@ -262,9 +264,7 @@ impl NativePodRuntime {
     /// Deletes a named namespace by unmounting and removing the file.
     fn delete_named_namespace(path: &Path) -> Result<()> {
         // Unmount the bind mount
-        let status = std::process::Command::new("umount")
-            .arg(path)
-            .status();
+        let status = std::process::Command::new("umount").arg(path).status();
 
         match status {
             Ok(s) if s.success() => {}
@@ -277,7 +277,11 @@ impl NativePodRuntime {
         // Remove the file
         if path.exists() {
             std::fs::remove_file(path).map_err(|e| {
-                Error::Internal(format!("failed to remove namespace file {}: {}", path.display(), e))
+                Error::Internal(format!(
+                    "failed to remove namespace file {}: {}",
+                    path.display(),
+                    e
+                ))
             })?;
         }
 

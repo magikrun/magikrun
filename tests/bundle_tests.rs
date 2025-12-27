@@ -933,10 +933,7 @@ mod security_tests {
         std::fs::create_dir_all(&rootfs).unwrap();
 
         // Symlink from a/b/c/link -> ../../../../etc/passwd (escapes)
-        let (data, digest) = create_layer_with_symlink(
-            "a/b/c/link",
-            "../../../../etc/passwd",
-        );
+        let (data, digest) = create_layer_with_symlink("a/b/c/link", "../../../../etc/passwd");
         storage.put_blob(&digest, &data).unwrap();
 
         let layers = vec![LayerInfo {
@@ -946,10 +943,7 @@ mod security_tests {
         }];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(
-            result.is_err(),
-            "Deep symlink escape should be rejected"
-        );
+        assert!(result.is_err(), "Deep symlink escape should be rejected");
     }
 
     #[test]
@@ -961,7 +955,8 @@ mod security_tests {
         std::fs::create_dir_all(&rootfs).unwrap();
 
         // Create target file first, then symlink
-        let (data1, digest1) = create_layer_with_files(&[("bin/busybox", b"#!/bin/sh\necho busybox")]);
+        let (data1, digest1) =
+            create_layer_with_files(&[("bin/busybox", b"#!/bin/sh\necho busybox")]);
         storage.put_blob(&digest1, &data1).unwrap();
 
         let (data2, digest2) = create_layer_with_symlink("bin/sh", "busybox");
@@ -1141,7 +1136,11 @@ mod security_tests {
         ];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "Whiteout should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Whiteout should succeed: {:?}",
+            result.err()
+        );
 
         // Whiteout should have removed the file
         assert!(
@@ -1179,7 +1178,11 @@ mod security_tests {
         }];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "Whiteout should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Whiteout should succeed: {:?}",
+            result.err()
+        );
 
         // The symlink should be removed
         assert!(
@@ -1231,7 +1234,11 @@ mod security_tests {
         ];
 
         let result = extract_layers_to_rootfs(&layers, &rootfs, &storage);
-        assert!(result.is_ok(), "Whiteout should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Whiteout should succeed: {:?}",
+            result.err()
+        );
 
         // Directory should be removed
         assert!(

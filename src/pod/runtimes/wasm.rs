@@ -125,7 +125,9 @@ impl PodRuntime for WasmPodRuntime {
 
     async fn run_pod(&self, spec: &PodSpec) -> Result<PodHandle> {
         let pod_id = PodId::from_pod(&spec.namespace, &spec.name);
-        let pod_dir = runtime_base_path().join(WASM_PODS_SUBDIR).join(pod_id.as_str());
+        let pod_dir = runtime_base_path()
+            .join(WASM_PODS_SUBDIR)
+            .join(pod_id.as_str());
 
         // Check capacity and reserve slot atomically
         {

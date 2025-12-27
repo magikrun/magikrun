@@ -341,7 +341,10 @@ impl BundleBuilder {
                         e
                     )));
                 }
-                debug!("Removed existing rootfs for fresh extraction: {}", rootfs.display());
+                debug!(
+                    "Removed existing rootfs for fresh extraction: {}",
+                    rootfs.display()
+                );
             } else {
                 // It's a file or symlink - remove it to prevent symlink attacks
                 if let Err(e) = fs::remove_file(&rootfs) {
@@ -1234,7 +1237,7 @@ pub fn extract_layers_to_rootfs(
                 let target_path = rootfs
                     .join(path.parent().unwrap_or(Path::new("")))
                     .join(target);
-                
+
                 // SECURITY: Use symlink_metadata() instead of exists() to prevent TOCTOU.
                 // symlink_metadata() returns info about the symlink itself (not following it),
                 // so an attacker cannot substitute a symlink between check and removal.

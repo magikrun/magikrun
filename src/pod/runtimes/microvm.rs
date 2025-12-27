@@ -570,7 +570,8 @@ impl PodRuntime for MicroVmPodRuntime {
         // Check if we have control port
         let port = control_port.ok_or_else(|| {
             Error::NotSupported(
-                "exec not available: control port not assigned (vminit may not be running)".to_string()
+                "exec not available: control port not assigned (vminit may not be running)"
+                    .to_string(),
             )
         })?;
 
@@ -621,7 +622,8 @@ impl PodRuntime for MicroVmPodRuntime {
         // Check if we have control port
         let port = control_port.ok_or_else(|| {
             Error::NotSupported(
-                "logs not available: control port not assigned (vminit may not be running)".to_string()
+                "logs not available: control port not assigned (vminit may not be running)"
+                    .to_string(),
             )
         })?;
 

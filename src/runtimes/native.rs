@@ -365,7 +365,10 @@ mod linux {
                 // between our read check and this write.
                 if containers.len() >= MAX_CONTAINERS {
                     // Container was created but we can't track it - attempt cleanup
-                    warn!("Container limit race detected, cleaning up container {}", id);
+                    warn!(
+                        "Container limit race detected, cleaning up container {}",
+                        id
+                    );
                     // Note: libcontainer container on disk will be orphaned here,
                     // but this is an extremely rare race condition. A background
                     // cleanup process should handle orphaned containers.

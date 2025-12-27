@@ -256,11 +256,7 @@ impl PasstInstance {
         // Prevent socket from being closed when UnixStream drops
         std::mem::forget(socket);
 
-        let control_port = config
-            .tcp_ports
-            .first()
-            .map(|(host, _)| *host)
-            .unwrap_or(0);
+        let control_port = config.tcp_ports.first().map(|(host, _)| *host).unwrap_or(0);
 
         Ok(Self {
             child,

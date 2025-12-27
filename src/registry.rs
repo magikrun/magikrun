@@ -76,7 +76,10 @@
 //!
 //! [`BlobStore::put_blob`]: crate::storage::BlobStore::put_blob
 
-use crate::constants::{IMAGE_PULL_TIMEOUT, MAX_CONFIG_SIZE, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS, MAX_MANIFEST_SIZE};
+use crate::constants::{
+    IMAGE_PULL_TIMEOUT, MAX_CONFIG_SIZE, MAX_IMAGE_REF_LEN, MAX_LAYER_SIZE, MAX_LAYERS,
+    MAX_MANIFEST_SIZE,
+};
 use crate::error::{Error, Result};
 use crate::platform::Platform;
 use crate::storage::BlobStore;

@@ -453,8 +453,8 @@ mod linux {
 
     /// Main init loop - zombie reaping, signal handling, control server.
     async fn run_init_loop(containers: Vec<ContainerInfo>) -> anyhow::Result<u8> {
-        use tokio::signal::unix::{SignalKind, signal};
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::signal::unix::{SignalKind, signal};
 
         // Set up signal handlers
         let mut sigterm = signal(SignalKind::terminate())?;
@@ -626,12 +626,8 @@ mod linux {
                     Err(e) => Response::error("invalid_request", format!("JSON parse error: {e}")),
                 }
             }
-            Ok(Err(e)) => {
-                Response::error("internal", format!("read error: {e}"))
-            }
-            Err(_) => {
-                Response::error("timeout", "request timed out")
-            }
+            Ok(Err(e)) => Response::error("internal", format!("read error: {e}")),
+            Err(_) => Response::error("timeout", "request timed out"),
         };
 
         // Send response
@@ -850,7 +846,10 @@ mod linux {
         // Try multiple log locations
         let log_paths = [
             // Standard OCI runtime log location
-            format!("{}/{}/{}", CONTAINER_STATE_ROOT, container.name, CONTAINER_LOG_FILE),
+            format!(
+                "{}/{}/{}",
+                CONTAINER_STATE_ROOT, container.name, CONTAINER_LOG_FILE
+            ),
             // Bundle-relative log
             format!("{}/{}", container.bundle_path, CONTAINER_LOG_FILE),
             // Fallback: read from /proc/<pid>/fd/1 (stdout)
