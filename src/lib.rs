@@ -199,12 +199,12 @@ pub mod runtime;
 /// - `PodHandle`, `PodStatus`, `PodPhase`: Runtime state types
 /// - Runtime implementations: `NativePodRuntime`, `MicroVmPodRuntime`, `WasmPodRuntime`
 ///
-/// ## Internal: TSI Protocol
+/// ## Internal: passt Control Protocol
 ///
-/// The TSI (Transparent Socket Interface) for MicroVM communication is
-/// internal to this module. It provides TCP-based exec/logs operations
-/// for containers running inside VMs (via passt networking). Pod lifecycle
-/// is handled by vminit reading baked specs - TSI only handles Day-2 operations.
+/// The control protocol for MicroVM communication runs over passt TCP.
+/// It provides exec/logs operations for containers running inside VMs.
+/// Pod lifecycle is handled by vminit reading baked specs - the control
+/// protocol only handles Day-2 operations.
 pub mod pod;
 
 /// Infra-container framework for infrastructure containers/inits.
@@ -227,13 +227,13 @@ pub mod pod;
 ///
 /// The same infra-container code runs identically in both native and MicroVM
 /// modes. The only difference is the outer environment (host vs VM).
-pub mod infracontainer;
+pub mod infra;
 
 /// passt integration for MicroVM networking.
 ///
 /// Provides TCP/UDP/ICMP networking for MicroVMs using passt:
 ///
-/// - **TCP**: Control channel (exec/logs via TSI protocol)
+/// - **TCP**: Control channel (exec/logs via control protocol)
 /// - **UDP**: Korium mesh networking (used by workplane)
 /// - **ICMP**: Health probes (ping)
 ///

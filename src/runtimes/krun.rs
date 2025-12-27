@@ -156,9 +156,10 @@ mod platform {
                 }
             }
 
-            // On macOS, check for Hypervisor.framework entitlement by verifying
-            // the helper binary exists. We avoid calling libkrun here because
-            // it uses env_logger::init() which panics if logging is already initialized.
+            // On macOS ARM64, Hypervisor.framework is available without explicit
+            // entitlements (macOS Ventura 13.0+). We avoid calling libkrun here
+            // because it uses env_logger::init() which panics if logging is
+            // already initialized.
             #[cfg(target_os = "macos")]
             {
                 // The helper binary will fail at runtime if HVF is not available

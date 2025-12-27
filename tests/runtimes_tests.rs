@@ -179,8 +179,8 @@ mod krun_macos_tests {
     fn test_krun_checks_hypervisor_framework() {
         let runtime = KrunRuntime::new();
 
-        // On macOS, krun uses Hypervisor.framework
-        // Availability depends on hardware and entitlements
+        // On macOS ARM64, krun uses Hypervisor.framework
+        // No explicit entitlements needed on macOS Ventura+ (13.0+)
         let _ = runtime.is_available();
     }
 }

@@ -38,7 +38,7 @@
 //! Extensions implement `InfraExtension` and hook into container lifecycle:
 //!
 //! ```rust,ignore
-//! use magikrun::infracontainer::{Infra, InfraExtension, InfraEvent, InfraContext};
+//! use magikrun::infra::{Infra, InfraExtension, InfraEvent, InfraContext};
 //!
 //! struct WorkplaneExtension {
 //!     wdht_client: WdhtClient,

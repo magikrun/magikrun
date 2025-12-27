@@ -10,18 +10,15 @@
 //! # Run all pod tests (WASM tests run everywhere)
 //! cargo test --test pod_tests
 //!
-//! # Run MicroVM tests (requires hypervisor entitlement on macOS)
+//! # Run MicroVM tests (requires hypervisor on Linux/macOS ARM64)
 //! cargo test --test pod_tests -- --ignored
 //! ```
 //!
 //! # macOS MicroVM Requirements
 //!
-//! MicroVM tests require the `com.apple.security.hypervisor` entitlement:
-//!
-//! ```bash
-//! # Sign binary with entitlement
-//! codesign -s - --entitlements entitlements.plist target/debug/deps/pod_tests-*
-//! ```
+//! On macOS ARM64 (Apple Silicon), Hypervisor.framework is accessible without
+//! explicit code signing or entitlements (macOS Ventura 13.0+). The tests will
+//! automatically detect hypervisor availability via `krun_create_ctx()`.
 
 #![allow(clippy::assertions_on_constants)]
 
@@ -387,9 +384,9 @@ mod microvm_tests {
     }
 
     /// Integration test that requires hypervisor access.
-    /// On macOS, requires `com.apple.security.hypervisor` entitlement.
+    /// On macOS ARM64, Hypervisor.framework works without explicit entitlements.
     #[tokio::test]
-    #[ignore = "requires hypervisor access and signed binary on macOS"]
+    #[ignore = "requires hypervisor access and real VM infrastructure"]
     async fn test_microvm_run_pod_integration() {
         if !microvm_available() {
             println!("Skipping: MicroVM not available");
@@ -497,7 +494,7 @@ mod microvm_tests {
     /// 5. Graceful shutdown
     /// 6. Cleanup
     ///
-    /// On macOS, requires `com.apple.security.hypervisor` entitlement.
+    /// On macOS ARM64, Hypervisor.framework works without explicit entitlements.
     #[tokio::test]
     #[ignore = "requires hypervisor access and real image pull capability"]
     async fn test_microvm_infra_app_pod_lifecycle() {
@@ -554,7 +551,7 @@ mod microvm_tests {
                 println!("  ✗ Pod failed to start: {}", e);
                 println!("\n    Possible causes:");
                 println!("    - Image pull failed (network/registry issue)");
-                println!("    - Hypervisor entitlement missing (macOS)");
+                println!("    - Hypervisor not available (check macOS ARM64)");
                 println!("    - VM boot failed (resource constraints)");
                 // Don't panic - graceful failure for CI environments
                 return;

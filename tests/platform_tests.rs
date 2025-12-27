@@ -188,6 +188,39 @@ mod macos_capabilities {
             "Cgroups should not be detected on macOS"
         );
     }
+
+    /// Tests that Hypervisor.framework is accessible on macOS ARM64 without
+    /// explicit code signing or entitlements.
+    ///
+    /// Background: Earlier macOS versions required the com.apple.security.hypervisor
+    /// entitlement to access Hypervisor.framework. However, modern macOS (Ventura+)
+    /// on Apple Silicon allows hypervisor access for adhoc-signed binaries without
+    /// explicit entitlements.
+    ///
+    /// This test validates that krun_create_ctx() succeeds, proving hypervisor
+    /// access works without signing the binary with entitlements.plist.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_hypervisor_framework_accessible_without_entitlements() {
+        let platform = Platform::detect();
+
+        // On macOS ARM64, hypervisor should be available via libkrun
+        assert!(
+            platform.has_hypervisor(),
+            "Hypervisor.framework should be accessible on macOS ARM64 without \
+             explicit entitlements. If this test fails, check:\n\
+             1. Running on Apple Silicon (M1/M2/M3)\n\
+             2. macOS Ventura (13.0) or later\n\
+             3. libkrun properly installed (brew install krunvm)"
+        );
+
+        println!("✓ Hypervisor.framework accessible without entitlements");
+        println!("  Platform: {}", platform.oci_platform());
+        println!(
+            "  Capabilities: {:?}",
+            platform.capabilities.iter().collect::<Vec<_>>()
+        );
+    }
 }
 
 // =============================================================================

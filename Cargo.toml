@@ -1,6 +1,6 @@
 [package]
 name = "magikrun"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 description = "Unified OCI runtime for containers, WebAssembly, and microVMs"
 license = "Apache-2.0"

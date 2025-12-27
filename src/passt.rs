@@ -6,8 +6,7 @@
 //!
 //! passt (Plug A Simple Socket Transport) is a userspace networking
 //! backend that provides full TCP/UDP/ICMP connectivity for VMs.
-//! Unlike libkrun's built-in TSI (which only supports TCP), passt
-//! enables UDP-based protocols like Korium.
+//! It enables both control protocols and UDP-based protocols like Korium.
 //!
 //! ## Architecture
 //!

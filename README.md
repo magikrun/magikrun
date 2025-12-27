@@ -134,7 +134,7 @@ Several factors make PRI the right approach today:
 | **OCI Runtime (runtime module)** | Bundle Builder, Storage | Single container lifecycle |
 | **Image & Bundle (image module)** | Storage, Registry | Pull images, build OCI bundles |
 | **Storage** | Filesystem | Content-addressed blob storage with SHA-256 verification |
-| **Infra (infracontainer module)** | — | Framework for infra-container binaries with extension model |
+| **Infra (infra module)** | — | Framework for infra-container binaries with extension model |
 | **passt** | — | TCP/UDP/ICMP networking for MicroVMs |
 
 ## Module Structure
@@ -144,7 +144,7 @@ Several factors make PRI the right approach today:
 | `image` | CRI ImageService pattern: pull images, build bundles (OciRuntime, Wasm, MicroVm) |
 | `runtime` | OCI RuntimeService: single-container lifecycle (create/start/kill/delete/state) |
 | `pod` | **PRI**: Atomic pod lifecycle with `PodRuntime` trait and exec/logs support |
-| `infracontainer` | Infra-container framework with extension model for workplane, mesh, service discovery |
+| `infra` | Infra-container framework with extension model for workplane, mesh, service discovery |
 | `passt` | MicroVM networking via passt (TCP forwarding, UDP for Korium, ICMP health probes) |
 
 ## OCI Runtimes (Single Container)
@@ -252,7 +252,7 @@ Every pod has an **infra-container** that:
 Extensions implement `InfraExtension` and hook into container lifecycle:
 
 ```rust
-use magikrun::infracontainer::{InfraExtension, InfraEvent, InfraContext};
+use magikrun::infra::{InfraExtension, InfraEvent, InfraContext};
 
 struct WorkplaneExtension { /* ... */ }
 

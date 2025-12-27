@@ -86,7 +86,7 @@ struct VmPodState {
     spec: PodSpec,
     /// VM container ID.
     vm_id: String,
-    /// Control port for TSI communication via passt (if available).
+    /// Control port for passt-based control protocol (if available).
     control_port: Option<u16>,
     /// Container names in this pod.
     container_names: Vec<String>,
@@ -535,7 +535,7 @@ impl PodRuntime for MicroVmPodRuntime {
     }
 
     // =========================================================================
-    // Day-2 Operations via TSI
+    // Day-2 Operations via passt Control Protocol
     // =========================================================================
 
     async fn exec(
