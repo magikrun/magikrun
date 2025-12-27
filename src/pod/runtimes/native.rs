@@ -48,8 +48,8 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig};
 use crate::pod::{
-    ContainerSpec, ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase,
-    PodRuntime, PodSpec, PodStatus, PodSummary,
+    ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase, PodRuntime, PodSpec,
+    PodStatus, PodSummary,
 };
 use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, Protocol, extract_port_mappings};
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
@@ -533,6 +533,7 @@ impl PodRuntime for NativePodRuntime {
                 user_id: None,
                 group_id: None,
                 hostname: spec.hostname.clone(),
+                vm_mode: false,
             };
 
             // Build bundle with namespace paths from infra-container
