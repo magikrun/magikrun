@@ -427,7 +427,7 @@ impl PodRuntime for NativePodRuntime {
         state.bundle_paths.push(pause_bundle.clone());
 
         // Step 1.3: Pull all images and build ALL bundles with namespace paths
-        use crate::image::{Bundle, ImageHandle};
+        use crate::image::Bundle;
         let mut prepared_containers: Vec<(String, Bundle)> = Vec::new();
 
         for container_spec in &spec.containers {
