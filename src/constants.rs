@@ -114,7 +114,7 @@ pub const MAX_CONTAINERS: usize = 1024;
 /// the inflight HashSet if unbounded.
 ///
 /// **Rationale**: 256 concurrent layer downloads is generous for legitimate
-/// use while bounding memory usage to ~50 KiB for digest strings.
+/// use while bounding memory usage to ~50 KiB for digest strings in `HashSet`.
 pub const MAX_INFLIGHT_BLOBS: usize = 256;
 
 // =============================================================================
@@ -417,7 +417,7 @@ pub const CONTAINER_NAME_VALID_CHARS: &str =
 /// **Security**: Prevents overly long container IDs that could cause
 /// filesystem path issues or be used in DoS attacks.
 ///
-/// **Rationale**: 128 characters accommodates UUIDs and descriptive names.
+/// **Rationale**: 128 characters accommodates `UUID`s and descriptive names.
 pub const MAX_CONTAINER_ID_LEN: usize = 128;
 
 // =============================================================================
@@ -433,9 +433,12 @@ pub const MAX_CONTAINER_ID_LEN: usize = 128;
 /// - Don't exceed `MAX_CONTAINER_ID_LEN`
 /// - Only contain characters from `CONTAINER_NAME_VALID_CHARS`
 ///
-/// # Returns
+/// # Errors
 ///
-/// `Ok(())` if valid, `Err(reason)` with a description of the failure.
+/// Returns `Err` with a static string describing the validation failure:
+/// - `"container ID cannot be empty"` - if `id` is empty
+/// - `"container ID exceeds maximum length"` - if `id.len() > MAX_CONTAINER_ID_LEN`
+/// - `"container ID contains invalid characters"` - if `id` contains disallowed characters
 #[inline]
 #[must_use = "validation result must be checked to ensure container ID is safe"]
 pub fn validate_container_id(id: &str) -> std::result::Result<(), &'static str> {

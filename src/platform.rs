@@ -126,7 +126,7 @@ pub enum Arch {
 /// A detected capability does not guarantee usability:
 /// - `Namespaces` may require root/CAP_SYS_ADMIN
 /// - `Cgroups` may require cgroup v2 unified hierarchy
-/// - `Hypervisor` may require KVM module loaded with access
+/// - `Hypervisor` may require `KVM` module loaded with access
 ///
 /// Runtime constructors perform additional validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,6 +145,7 @@ pub enum Capability {
 
 impl Platform {
     /// Detects the current platform and its capabilities.
+    #[must_use]
     pub fn detect() -> Self {
         let os = Self::detect_os();
         let arch = Self::detect_arch();
