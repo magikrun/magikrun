@@ -51,10 +51,10 @@ use crate::pod::{
     ContainerSpec, ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase,
     PodRuntime, PodSpec, PodStatus, PodSummary,
 };
+use crate::pod::{extract_port_mappings, PortMapping, Protocol, MAX_PORT_MAPPINGS};
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -88,92 +88,6 @@ const DEFAULT_INFRA_BINARY_PATH: &str = "/usr/libexec/magik/workplane";
 
 /// Maximum PID file size (sanity check).
 const MAX_PID_FILE_SIZE: u64 = 32;
-
-// ============================================================================
-// PORT MAPPING
-// ============================================================================
-
-/// Network protocol for port forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Protocol {
-    /// TCP port forwarding.
-    Tcp,
-    /// UDP port forwarding.
-    Udp,
-}
-
-impl fmt::Display for Protocol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "TCP"),
-            Self::Udp => write!(f, "UDP"),
-        }
-    }
-}
-
-/// A single port mapping from host to container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PortMapping {
-    /// Protocol (TCP or UDP).
-    protocol: Protocol,
-    /// Port on the host to listen on.
-    host_port: u16,
-    /// Port inside the container to forward to.
-    container_port: u16,
-}
-
-impl PortMapping {
-    /// Creates a TCP port mapping.
-    const fn tcp(host_port: u16, container_port: u16) -> Self {
-        Self {
-            protocol: Protocol::Tcp,
-            host_port,
-            container_port,
-        }
-    }
-
-    /// Creates a UDP port mapping.
-    const fn udp(host_port: u16, container_port: u16) -> Self {
-        Self {
-            protocol: Protocol::Udp,
-            host_port,
-            container_port,
-        }
-    }
-}
-
-impl fmt::Display for PortMapping {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}→{}",
-            self.protocol, self.host_port, self.container_port
-        )
-    }
-}
-
-/// Extracts port mappings from container specs.
-fn extract_port_mappings(containers: &[ContainerSpec]) -> Vec<PortMapping> {
-    let mut mappings = Vec::new();
-
-    for container in containers {
-        for port in &container.ports {
-            // K8s-strict: only map ports with explicit hostPort
-            let Some(host_port) = port.host_port else {
-                continue;
-            };
-
-            let mapping = match port.protocol.to_uppercase().as_str() {
-                "UDP" => PortMapping::udp(host_port, port.container_port),
-                _ => PortMapping::tcp(host_port, port.container_port),
-            };
-
-            mappings.push(mapping);
-        }
-    }
-
-    mappings
-}
 
 // ============================================================================
 // INFRA-CONTAINER (pasta + external binary)
@@ -239,11 +153,11 @@ impl InfraContainer {
             match mapping.protocol {
                 Protocol::Tcp => {
                     cmd.arg("-t");
-                    cmd.arg(format!("{}:{}", mapping.host_port, mapping.container_port));
+                    cmd.arg(mapping.as_arg());
                 }
                 Protocol::Udp => {
                     cmd.arg("-u");
-                    cmd.arg(format!("{}:{}", mapping.host_port, mapping.container_port));
+                    cmd.arg(mapping.as_arg());
                 }
             }
         }
@@ -522,8 +436,34 @@ impl PodRuntime for NativePodRuntime {
         // No runtime state created - fully atomic rollback possible
         // =========================================================================
 
-        // Step 1.1: Extract port mappings from all containers
-        let port_mappings = extract_port_mappings(&spec.containers);
+        // Step 1.1: Extract port mappings from all containers (with validation)
+        let port_result = extract_port_mappings(&spec.containers);
+
+        if port_result.skipped_invalid > 0 {
+            warn!(
+                pod = %pod_id,
+                skipped = port_result.skipped_invalid,
+                "Skipped invalid port mappings (port 0 not allowed)"
+            );
+        }
+
+        if port_result.skipped_duplicates > 0 {
+            warn!(
+                pod = %pod_id,
+                skipped = port_result.skipped_duplicates,
+                "Skipped duplicate port mappings"
+            );
+        }
+
+        if port_result.limit_reached {
+            warn!(
+                pod = %pod_id,
+                max = MAX_PORT_MAPPINGS,
+                "Port mapping limit reached, some mappings were dropped"
+            );
+        }
+
+        let port_mappings = port_result.mappings;
 
         // Step 1.2: Spawn infra-container (pasta + infra binary)
         let pod_id_str = pod_id.as_str();

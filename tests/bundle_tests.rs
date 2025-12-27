@@ -790,6 +790,7 @@ fn test_oci_config_custom_values() {
         user_id: Some(1000),
         group_id: Some(1000),
         hostname: Some("my-host".to_string()),
+        vm_mode: false,
     };
 
     assert_eq!(config.name, "my-app");

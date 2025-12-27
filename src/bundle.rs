@@ -607,33 +607,7 @@ impl BundleBuilder {
                 .unwrap_or_else(|| "container".to_string()),
             mounts: self.default_mounts(),
             linux: Some(OciLinux {
-                namespaces: vec![
-                    OciNamespace {
-                        ns_type: "pid".to_string(),
-                        path: None,
-                    },
-                    OciNamespace {
-                        ns_type: "network".to_string(),
-                        path: None,
-                    },
-                    OciNamespace {
-                        ns_type: "ipc".to_string(),
-                        path: None,
-                    },
-                    OciNamespace {
-                        ns_type: "uts".to_string(),
-                        path: None,
-                    },
-                    OciNamespace {
-                        ns_type: "mount".to_string(),
-                        path: None,
-                    },
-                    // SECURITY: Isolate cgroup visibility
-                    OciNamespace {
-                        ns_type: "cgroup".to_string(),
-                        path: None,
-                    },
-                ],
+                namespaces: self.generate_namespaces(config.vm_mode),
                 resources: None,
                 // SECURITY: Restrict syscalls to reduce kernel attack surface
                 seccomp: Some(Self::default_seccomp()),
@@ -643,6 +617,55 @@ impl BundleBuilder {
                 readonly_paths: Self::default_readonly_paths(),
             }),
         }
+    }
+
+    /// Generates namespace configuration for OCI spec.
+    ///
+    /// # Arguments
+    ///
+    /// * `vm_mode` - If true, skips network namespace (containers share VM's network)
+    ///
+    /// # Security
+    ///
+    /// When `vm_mode` is true, network isolation is provided by the VM boundary
+    /// (hardware virtualization via KVM/Hypervisor.framework), not by Linux
+    /// network namespaces. This matches the behavior of Kata Containers and
+    /// Firecracker-containerd.
+    fn generate_namespaces(&self, vm_mode: bool) -> Vec<OciNamespace> {
+        let mut namespaces = vec![
+            OciNamespace {
+                ns_type: "pid".to_string(),
+                path: None,
+            },
+            OciNamespace {
+                ns_type: "ipc".to_string(),
+                path: None,
+            },
+            OciNamespace {
+                ns_type: "uts".to_string(),
+                path: None,
+            },
+            OciNamespace {
+                ns_type: "mount".to_string(),
+                path: None,
+            },
+            // SECURITY: Isolate cgroup visibility
+            OciNamespace {
+                ns_type: "cgroup".to_string(),
+                path: None,
+            },
+        ];
+
+        // Only add network namespace for non-VM containers
+        // VM containers use the VM's network (isolated by hardware)
+        if !vm_mode {
+            namespaces.push(OciNamespace {
+                ns_type: "network".to_string(),
+                path: None,
+            });
+        }
+
+        namespaces
     }
 
     /// Returns the default capability set for containers.
@@ -1047,6 +1070,19 @@ pub struct OciContainerConfig {
     pub group_id: Option<u32>,
     /// Hostname.
     pub hostname: Option<String>,
+    /// VM mode: skip network namespace creation.
+    ///
+    /// When `true`, the generated OCI config will not create a new network
+    /// namespace. This is used for containers running inside MicroVMs where
+    /// network isolation is provided by the VM boundary (via passt/libkrun).
+    ///
+    /// # Security
+    ///
+    /// This is safe for MicroVM containers because:
+    /// - The VM provides hardware-level network isolation
+    /// - passt handles port forwarding from host to VM
+    /// - No network traffic can bypass the VM boundary
+    pub vm_mode: bool,
 }
 
 // =============================================================================

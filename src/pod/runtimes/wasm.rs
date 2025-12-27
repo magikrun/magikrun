@@ -223,6 +223,7 @@ impl PodRuntime for WasmPodRuntime {
                 user_id: None,
                 group_id: None,
                 hostname: spec.hostname.clone(),
+                vm_mode: false, // WASM has its own sandbox, not VM-based
             };
 
             let bundle = match self.bundle_builder.build_oci_bundle(&image, &config) {
@@ -290,6 +291,7 @@ impl PodRuntime for WasmPodRuntime {
                 user_id: None,
                 group_id: None,
                 hostname: spec.hostname.clone(),
+                vm_mode: false, // WASM has its own sandbox, not VM-based
             };
 
             let bundle = match self.bundle_builder.build_oci_bundle(&image, &config) {

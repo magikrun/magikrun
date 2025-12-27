@@ -46,17 +46,16 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig, Os, Platform};
 use crate::pod::{
-    ContainerSpec, ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId,
+    ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId,
     PodPhase, PodRuntime, PodSpec, PodStatus, PodSummary,
 };
 use crate::runtime::{KrunRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::io;
 use std::net::SocketAddr;
-use std::os::unix::io::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::RwLock;
@@ -82,9 +81,6 @@ use crate::pod::runtime_base_path;
 // | Performance | ~28 Gbps TCP |
 // =============================================================================
 
-/// Maximum number of port mappings per forwarder instance.
-const MAX_PORT_MAPPINGS: usize = 1024;
-
 /// Maximum socket path length (Unix socket limit).
 const MAX_SOCKET_PATH_LEN: usize = 108;
 
@@ -103,72 +99,8 @@ const VM_PODS_SUBDIR: &str = "vm-pods";
 /// Poll interval when waiting for stop (milliseconds).
 const STOP_POLL_INTERVAL_MS: u64 = 100;
 
-// =============================================================================
-// Protocol
-// =============================================================================
-
-/// Network protocol for port forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Protocol {
-    /// TCP port forwarding.
-    Tcp,
-    /// UDP port forwarding.
-    Udp,
-}
-
-impl fmt::Display for Protocol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "TCP"),
-            Self::Udp => write!(f, "UDP"),
-        }
-    }
-}
-
-// =============================================================================
-// PortMapping
-// =============================================================================
-
-/// A single port mapping from host to VM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PortMapping {
-    /// Protocol (TCP or UDP).
-    protocol: Protocol,
-    /// Port on the host to listen on.
-    host_port: u16,
-    /// Port inside the VM to forward to.
-    container_port: u16,
-}
-
-impl PortMapping {
-    /// Creates a TCP port mapping.
-    const fn tcp(host_port: u16, container_port: u16) -> Self {
-        Self {
-            protocol: Protocol::Tcp,
-            host_port,
-            container_port,
-        }
-    }
-
-    /// Creates a UDP port mapping.
-    const fn udp(host_port: u16, container_port: u16) -> Self {
-        Self {
-            protocol: Protocol::Udp,
-            host_port,
-            container_port,
-        }
-    }
-}
-
-impl fmt::Display for PortMapping {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}→{}",
-            self.protocol, self.host_port, self.container_port
-        )
-    }
-}
+// Use shared port forwarding types
+use crate::pod::{extract_port_mappings, PortMapping, Protocol, MAX_PORT_MAPPINGS};
 
 // =============================================================================
 // PasstForwarder
@@ -198,7 +130,10 @@ struct PasstForwarder {
     /// passt child process.
     child: Option<Child>,
     /// Connected socket fd (after start).
-    socket_fd: Option<RawFd>,
+    ///
+    /// Uses `OwnedFd` for RAII - fd is automatically closed on drop,
+    /// preventing leaks if `stop()` is not called.
+    socket_fd: Option<OwnedFd>,
 }
 
 impl PasstForwarder {
@@ -273,7 +208,7 @@ impl PasstForwarder {
     /// Must be called after `start()`. Used with `krun_set_passt_fd()`.
     #[allow(dead_code)] // Will be used when libkrun FFI integration is complete
     fn socket_fd(&self) -> RawFd {
-        self.socket_fd.unwrap_or(-1)
+        self.socket_fd.as_ref().map_or(-1, |fd| fd.as_raw_fd())
     }
 
     /// Returns the socket path.
@@ -313,7 +248,7 @@ impl PasstForwarder {
                 }
                 Protocol::Udp => {
                     cmd.arg("-u")
-                        .arg(format!("{}:{}", mapping.host_port, mapping.container_port));
+                        .arg(mapping.as_arg());
                 }
             }
         }
@@ -338,33 +273,50 @@ impl PasstForwarder {
 
         self.child = Some(child);
 
-        // Wait for socket to appear
+        // Connect to passt socket with retry loop (fixes TOCTOU race)
+        // Instead of checking if file exists then connecting, we try to connect
+        // directly and retry on NotFound/ConnectionRefused.
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(PASST_STARTUP_TIMEOUT_MS);
 
-        while !self.socket_path.exists() {
-            if std::time::Instant::now() > deadline {
-                // Kill the process if socket didn't appear
-                if let Some(ref mut child) = self.child {
-                    let _ = child.kill();
+        let socket = loop {
+            match std::os::unix::net::UnixStream::connect(&self.socket_path) {
+                Ok(s) => break s,
+                Err(e)
+                    if e.kind() == io::ErrorKind::NotFound
+                        || e.kind() == io::ErrorKind::ConnectionRefused =>
+                {
+                    if std::time::Instant::now() > deadline {
+                        // Kill the process if we can't connect
+                        if let Some(ref mut child) = self.child {
+                            let _ = child.kill();
+                        }
+                        self.child = None;
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "failed to connect to passt socket within timeout",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(PASST_STARTUP_POLL_MS));
                 }
-                self.child = None;
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "passt socket did not appear within timeout",
-                ));
+                Err(e) => {
+                    // Unexpected error - clean up and propagate
+                    if let Some(ref mut child) = self.child {
+                        let _ = child.kill();
+                    }
+                    self.child = None;
+                    return Err(e);
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(PASST_STARTUP_POLL_MS));
-        }
+        };
 
-        // Connect to passt socket
-        let socket = std::os::unix::net::UnixStream::connect(&self.socket_path)?;
-        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&socket);
+        // Convert UnixStream to OwnedFd for RAII (automatic close on drop)
+        // SAFETY: into_raw_fd() gives us ownership of the fd, and from_raw_fd
+        // takes ownership. No double-close is possible.
+        let owned_fd = unsafe { OwnedFd::from_raw_fd(socket.into_raw_fd()) };
+        let fd = owned_fd.as_raw_fd();
 
-        // Prevent socket from being closed when UnixStream drops
-        std::mem::forget(socket);
-
-        self.socket_fd = Some(fd);
+        self.socket_fd = Some(owned_fd);
 
         tracing::info!(
             id = %self.id,
@@ -378,15 +330,9 @@ impl PasstForwarder {
 
     /// Stops the passt forwarder.
     fn stop(&mut self) -> io::Result<()> {
-        // Close the socket fd
-        if let Some(fd) = self.socket_fd.take() {
-            // SAFETY: fd is a valid file descriptor from UnixStream::connect.
-            // We called mem::forget on the UnixStream, so we own this fd.
-            // The Option::take() ensures we only close it once.
-            unsafe {
-                libc::close(fd);
-            }
-        }
+        // Close the socket fd - OwnedFd handles close automatically via Drop
+        // Taking the Option ensures we don't try to use it again
+        drop(self.socket_fd.take());
 
         // Kill passt process
         if let Some(ref mut child) = self.child {
@@ -408,40 +354,6 @@ impl Drop for PasstForwarder {
     fn drop(&mut self) {
         let _ = self.stop();
     }
-}
-
-// =============================================================================
-// Port Mapping Extraction
-// =============================================================================
-
-/// Extracts port mappings from container specs.
-///
-/// Converts `ContainerSpec.ports` into a vector of `PortMapping`.
-///
-/// # Port Resolution (K8s-compatible)
-///
-/// Only creates port mappings when `hostPort` is explicitly specified.
-/// Ports without `hostPort` are skipped (K8s behavior: not exposed on host).
-fn extract_port_mappings(containers: &[ContainerSpec]) -> Vec<PortMapping> {
-    let mut mappings = Vec::new();
-
-    for container in containers {
-        for port in &container.ports {
-            // K8s-strict: only map ports with explicit hostPort
-            let Some(host_port) = port.host_port else {
-                continue;
-            };
-
-            let mapping = match port.protocol.to_uppercase().as_str() {
-                "UDP" => PortMapping::udp(host_port, port.container_port),
-                _ => PortMapping::tcp(host_port, port.container_port),
-            };
-
-            mappings.push(mapping);
-        }
-    }
-
-    mappings
 }
 
 // =============================================================================
@@ -662,7 +574,7 @@ impl PodRuntime for MicroVmPodRuntime {
 
         // Pull all images and merge into composite rootfs
         // The first container's image forms the base, others are overlaid
-        for (idx, container_spec) in spec.containers.iter().enumerate() {
+        for container_spec in &spec.containers {
             tracing::info!(
                 pod = %pod_id,
                 image = %container_spec.image,
@@ -696,6 +608,7 @@ impl PodRuntime for MicroVmPodRuntime {
                 full_command.extend(args.clone());
             }
 
+            // VM mode: containers share VM's network (isolated by hardware)
             let config = OciContainerConfig {
                 name: container_spec.name.clone(),
                 command: if full_command.is_empty() {
@@ -708,6 +621,7 @@ impl PodRuntime for MicroVmPodRuntime {
                 user_id: None,
                 group_id: None,
                 hostname: spec.hostname.clone(),
+                vm_mode: true, // Skip network namespace - VM provides isolation
             };
 
             let bundle = match self.bundle_builder.build_oci_bundle(&image, &config) {
@@ -717,51 +631,94 @@ impl PodRuntime for MicroVmPodRuntime {
                     let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                     self.cleanup_failed_pod(state).await;
                     return Err(Error::BundleBuildFailed(format!(
-                        "failed to build bundle for {}: {}",
-                        container_name, e
+                        "failed to build bundle for {container_name}: {e}"
                     )));
                 }
             };
 
-            // For the first container, copy the full rootfs
-            // For subsequent containers, merge/overlay
-            if let Some(src_rootfs) = bundle.rootfs() {
-                if idx == 0 {
-                    // First container: copy entire rootfs
-                    if let Err(e) = Self::copy_dir_recursive(src_rootfs, &rootfs_path) {
-                        let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-                        self.cleanup_failed_pod(state).await;
-                        return Err(Error::BundleBuildFailed(format!(
-                            "failed to copy rootfs: {e}"
-                        )));
-                    }
-                } else {
-                    // Subsequent containers: merge into existing rootfs
-                    // TODO: Proper overlay/union mount or container-specific dirs
-                    if let Err(e) = Self::copy_dir_recursive(src_rootfs, &rootfs_path) {
-                        tracing::warn!(
-                            "Failed to merge rootfs for {}: {} (continuing with base)",
-                            container_spec.name,
-                            e
-                        );
-                    }
-                }
+            // Create container bundle structure inside VM rootfs:
+            // /rootfs/containers/<name>/rootfs/ + config.json
+            let container_bundle_dir = rootfs_path.join("containers").join(&container_spec.name);
+            let container_rootfs_dir = container_bundle_dir.join("rootfs");
+
+            if let Err(e) = std::fs::create_dir_all(&container_rootfs_dir) {
+                let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
+                self.cleanup_failed_pod(state).await;
+                return Err(Error::BundleBuildFailed(format!(
+                    "failed to create container bundle dir: {e}"
+                )));
             }
+
+            // Copy container's rootfs into the bundle structure
+            if let Some(src_rootfs) = bundle.rootfs()
+                && let Err(e) = Self::copy_dir_recursive(src_rootfs, &container_rootfs_dir)
+            {
+                let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
+                self.cleanup_failed_pod(state).await;
+                return Err(Error::BundleBuildFailed(format!(
+                    "failed to copy rootfs for {}: {e}",
+                    container_spec.name
+                )));
+            }
+
+            // Copy config.json from the built bundle
+            let src_config = bundle.path().join("config.json");
+            let dst_config = container_bundle_dir.join("config.json");
+            if let Err(e) = std::fs::copy(&src_config, &dst_config) {
+                let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
+                self.cleanup_failed_pod(state).await;
+                return Err(Error::BundleBuildFailed(format!(
+                    "failed to copy config.json for {}: {e}",
+                    container_spec.name
+                )));
+            }
+
+            tracing::debug!(
+                container = %container_spec.name,
+                bundle_dir = %container_bundle_dir.display(),
+                "Container bundle prepared inside VM rootfs"
+            );
         }
 
         tracing::info!(
             pod = %pod_id,
             vm_id = %vm_id,
             bundle = %pod_dir.display(),
-            "MicroVM bundle prepared"
+            "MicroVM bundle prepared with per-container bundles"
         );
 
         // =========================================================================
         // PHASE 1.5: SPAWN PASST (Network setup before VM boot)
         // =========================================================================
 
-        // Extract port mappings from all containers using unified PortForwarder
-        let mut port_mappings = extract_port_mappings(&spec.containers);
+        // Extract port mappings from all containers using shared port_forward module
+        let port_result = extract_port_mappings(&spec.containers);
+
+        if port_result.skipped_invalid > 0 {
+            tracing::warn!(
+                pod = %pod_id,
+                skipped = port_result.skipped_invalid,
+                "Skipped invalid port mappings (port 0 not allowed)"
+            );
+        }
+
+        if port_result.skipped_duplicates > 0 {
+            tracing::warn!(
+                pod = %pod_id,
+                skipped = port_result.skipped_duplicates,
+                "Skipped duplicate port mappings"
+            );
+        }
+
+        if port_result.limit_reached {
+            tracing::warn!(
+                pod = %pod_id,
+                max = MAX_PORT_MAPPINGS,
+                "Port mapping limit reached, some mappings were dropped"
+            );
+        }
+
+        let mut port_mappings = port_result.mappings;
 
         // Always add control port for exec/logs
         const CONTROL_GUEST_PORT: u16 = 1024;

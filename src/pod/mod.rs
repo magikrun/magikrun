@@ -63,12 +63,16 @@
 //! runtime.delete_pod(&handle.id, false).await?;
 //! ```
 
+mod portforward;
 mod runtimes;
 mod spec;
 mod state;
 mod traits;
 
 use std::path::PathBuf;
+
+// Re-export port forwarding for use by runtimes
+pub(crate) use portforward::{extract_port_mappings, PortMapping, Protocol, MAX_PORT_MAPPINGS};
 
 /// Returns the platform-appropriate base directory for pod runtime state.
 ///
