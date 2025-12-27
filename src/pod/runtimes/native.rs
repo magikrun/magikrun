@@ -167,7 +167,7 @@ impl NativePodRuntime {
             ))
         })?;
 
-        let mut paths = HashMap::new();
+        let mut paths: HashMap<String, PathBuf> = HashMap::new();
 
         for (ns_type, ns_file) in SHARED_NAMESPACE_TYPES {
             let ns_path = PathBuf::from(format!("{NAMESPACE_DIR}/{}-{}", pod_id.as_str(), ns_file));
