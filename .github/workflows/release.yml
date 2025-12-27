@@ -97,12 +97,23 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      - name: Find libclang path (Linux)
+        if: runner.os == 'Linux'
+        id: libclang
+        run: |
+          LIBCLANG=$(find /usr/lib -name 'libclang*.so*' -type f 2>/dev/null | head -1)
+          if [ -n "$LIBCLANG" ]; then
+            echo "path=$(dirname $LIBCLANG)" >> $GITHUB_OUTPUT
+          else
+            echo "path=/usr/lib/llvm-14/lib" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
         env:
           PKG_CONFIG_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib/pkgconfig:/tmp/libkrun-prefix/lib64/pkgconfig' || '/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig' }}
           LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && '/usr/local/lib' || '' }}
-          LIBCLANG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/llvm/lib' || '' }}
+          LIBCLANG_PATH: ${{ runner.os == 'Linux' && steps.libclang.outputs.path || (runner.os == 'macOS' && '/opt/homebrew/opt/llvm/lib' || '') }}
           LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
           DYLD_LIBRARY_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/lib' || '' }}
 
