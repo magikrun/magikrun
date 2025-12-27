@@ -51,7 +51,8 @@ use crate::pod::{
     ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase, PodRuntime, PodSpec,
     PodStatus, PodSummary,
 };
-use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, Protocol, extract_port_mappings};
+use crate::pod::portforward::Protocol;
+use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, extract_port_mappings};
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
