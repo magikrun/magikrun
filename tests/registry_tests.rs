@@ -295,8 +295,8 @@ async fn test_pull_image_handles_network_errors() {
     let storage = Arc::new(BlobStore::with_path(temp_dir.path().join("blobs")).unwrap());
     let service = ImageService::with_storage(storage);
 
-    // Non-routable address should fail quickly
-    let result = service.pull("10.255.255.1:5000/test:latest").await;
+    // Invalid hostname causes fast DNS failure (vs TCP timeout with non-routable IP)
+    let result = service.pull("invalid.invalid:5000/test:latest").await;
     assert!(result.is_err(), "unreachable registry should fail");
 }
 

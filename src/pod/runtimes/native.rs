@@ -48,14 +48,13 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig};
 use crate::pod::{
-    ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase, PodRuntime, PodSpec,
-    PodStatus, PodSummary,
+    ContainerSpec, ContainerStatus, DEFAULT_GRACE_PERIOD_SECS, PodHandle, PodId, PodPhase,
+    PodRuntime, PodSpec, PodStatus, PodSummary,
 };
-use crate::portforwarder::{PortMapping, Protocol, extract_port_mappings};
 use crate::runtime::{NativeRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::io;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -89,6 +88,92 @@ const DEFAULT_INFRA_BINARY_PATH: &str = "/usr/libexec/magik/workplane";
 
 /// Maximum PID file size (sanity check).
 const MAX_PID_FILE_SIZE: u64 = 32;
+
+// ============================================================================
+// PORT MAPPING
+// ============================================================================
+
+/// Network protocol for port forwarding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Protocol {
+    /// TCP port forwarding.
+    Tcp,
+    /// UDP port forwarding.
+    Udp,
+}
+
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp => write!(f, "TCP"),
+            Self::Udp => write!(f, "UDP"),
+        }
+    }
+}
+
+/// A single port mapping from host to container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PortMapping {
+    /// Protocol (TCP or UDP).
+    protocol: Protocol,
+    /// Port on the host to listen on.
+    host_port: u16,
+    /// Port inside the container to forward to.
+    container_port: u16,
+}
+
+impl PortMapping {
+    /// Creates a TCP port mapping.
+    const fn tcp(host_port: u16, container_port: u16) -> Self {
+        Self {
+            protocol: Protocol::Tcp,
+            host_port,
+            container_port,
+        }
+    }
+
+    /// Creates a UDP port mapping.
+    const fn udp(host_port: u16, container_port: u16) -> Self {
+        Self {
+            protocol: Protocol::Udp,
+            host_port,
+            container_port,
+        }
+    }
+}
+
+impl fmt::Display for PortMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}→{}",
+            self.protocol, self.host_port, self.container_port
+        )
+    }
+}
+
+/// Extracts port mappings from container specs.
+fn extract_port_mappings(containers: &[ContainerSpec]) -> Vec<PortMapping> {
+    let mut mappings = Vec::new();
+
+    for container in containers {
+        for port in &container.ports {
+            // K8s-strict: only map ports with explicit hostPort
+            let Some(host_port) = port.host_port else {
+                continue;
+            };
+
+            let mapping = match port.protocol.to_uppercase().as_str() {
+                "UDP" => PortMapping::udp(host_port, port.container_port),
+                _ => PortMapping::tcp(host_port, port.container_port),
+            };
+
+            mappings.push(mapping);
+        }
+    }
+
+    mappings
+}
 
 // ============================================================================
 // INFRA-CONTAINER (pasta + external binary)
@@ -355,196 +440,13 @@ impl NativePodRuntime {
         })
     }
 
-    /// Creates named namespaces for a pod.
-    ///
-    /// Named namespaces are persistent paths in `/run/magik/ns/` that exist
-    /// independently of any process. This enables true atomic pod deployment:
-    /// all bundles can be built with known namespace paths BEFORE any container starts.
-    ///
-    /// # Arguments
-    ///
-    /// * `pod_id` - Pod identifier for unique namespace names
-    ///
-    /// # Returns
-    ///
-    /// Map of namespace type → path for use in bundle config.json
-    ///
-    /// # Namespace Creation
-    ///
-    /// Uses `unshare(2)` + bind mount pattern:
-    /// 1. Create empty file at target path
-    /// 2. Fork child that unshares the namespace
-    /// 3. Child bind-mounts its `/proc/self/ns/{type}` to target path
-    /// 4. Child exits, namespace persists via bind mount
-    ///
-    /// # Security
-    ///
-    /// - Requires CAP_SYS_ADMIN for unshare
-    /// - Namespace paths are pod-specific, no collision possible
-    /// - Cleaned up on pod deletion or failure
-    fn create_named_namespaces(pod_id: &PodId) -> Result<HashMap<String, PathBuf>> {
-        use std::fs::{self, File};
-        use std::os::unix::fs::OpenOptionsExt;
-
-        // Ensure namespace directory exists
-        fs::create_dir_all(NAMESPACE_DIR).map_err(|e| {
-            Error::Internal(format!(
-                "failed to create namespace directory {NAMESPACE_DIR}: {e}"
-            ))
-        })?;
-
-        let mut paths: HashMap<String, PathBuf> = HashMap::new();
-
-        for (ns_type, ns_file) in SHARED_NAMESPACE_TYPES {
-            let ns_path = PathBuf::from(format!("{NAMESPACE_DIR}/{}-{}", pod_id.as_str(), ns_file));
-
-            // Create empty file for bind mount target
-            File::options()
-                .write(true)
-                .create_new(true)
-                .mode(0o644)
-                .open(&ns_path)
-                .map_err(|e| {
-                    // Clean up any namespaces we already created
-                    for created_path in paths.values() {
-                        let _ = Self::delete_named_namespace(created_path);
-                    }
-                    Error::Internal(format!(
-                        "failed to create namespace file {}: {}",
-                        ns_path.display(),
-                        e
-                    ))
-                })?;
-
-            // Create namespace via unshare + bind mount
-            // This is done in a child process so the parent doesn't change namespaces
-            let ns_path_clone = ns_path.clone();
-            let ns_file_str = *ns_file;
-
-            // SAFETY: We're forking and the child immediately execs or exits.
-            // The child doesn't share memory with parent after fork on Linux.
-            let result = std::process::Command::new("unshare")
-                .arg(match ns_file_str {
-                    "net" => "--net",
-                    "ipc" => "--ipc",
-                    "uts" => "--uts",
-                    _ => unreachable!("unknown namespace type"),
-                })
-                .arg("--")
-                .arg("sh")
-                .arg("-c")
-                .arg(format!(
-                    "mount --bind /proc/self/ns/{} {}",
-                    ns_file_str,
-                    ns_path_clone.display()
-                ))
-                .status();
-
-            match result {
-                Ok(status) if status.success() => {
-                    tracing::debug!(
-                        pod = %pod_id,
-                        namespace = %ns_type,
-                        path = %ns_path.display(),
-                        "Created named namespace"
-                    );
-                    paths.insert(ns_type.to_string(), ns_path);
-                }
-                Ok(status) => {
-                    // Clean up the file we created
-                    let _ = fs::remove_file(&ns_path);
-                    // Clean up any namespaces we already created
-                    for created_path in paths.values() {
-                        let _ = Self::delete_named_namespace(created_path);
-                    }
-                    return Err(Error::Internal(format!(
-                        "unshare failed for {} namespace: exit code {:?}",
-                        ns_type,
-                        status.code()
-                    )));
-                }
-                Err(e) => {
-                    // Clean up the file we created
-                    let _ = fs::remove_file(&ns_path);
-                    // Clean up any namespaces we already created
-                    for created_path in paths.values() {
-                        let _ = Self::delete_named_namespace(created_path);
-                    }
-                    return Err(Error::Internal(format!(
-                        "failed to execute unshare for {} namespace: {}",
-                        ns_type, e
-                    )));
-                }
-            }
-        }
-
-        tracing::info!(
-            pod = %pod_id,
-            namespaces = ?paths.keys().collect::<Vec<_>>(),
-            "Created named namespaces for pod"
-        );
-
-        Ok(paths)
-    }
-
-    /// Deletes a named namespace by unmounting and removing the file.
-    fn delete_named_namespace(path: &Path) -> Result<()> {
-        // Unmount the bind mount
-        let status = std::process::Command::new("umount").arg(path).status();
-
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(_) | Err(_) => {
-                // umount failed - might already be unmounted, try to remove anyway
-                tracing::debug!(path = %path.display(), "umount failed or not mounted");
-            }
-        }
-
-        // Remove the file
-        if path.exists() {
-            std::fs::remove_file(path).map_err(|e| {
-                Error::Internal(format!(
-                    "failed to remove namespace file {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-        }
-
-        Ok(())
-    }
-
-    /// Deletes all named namespaces for a pod.
-    fn delete_pod_namespaces(namespace_paths: &HashMap<String, PathBuf>) {
-        for (ns_type, path) in namespace_paths {
-            if let Err(e) = Self::delete_named_namespace(path) {
-                tracing::warn!(
-                    namespace = %ns_type,
-                    path = %path.display(),
-                    error = %e,
-                    "Failed to delete named namespace"
-                );
-            } else {
-                tracing::debug!(
-                    namespace = %ns_type,
-                    path = %path.display(),
-                    "Deleted named namespace"
-                );
-            }
-        }
-    }
-
     /// Cleans up all resources for a failed pod deployment.
-    async fn cleanup_failed_pod(&self, state: &PodState) {
-        // Kill pasta daemon if running
-        if let Some(ref child) = state.pasta_child {
-            // Use kill(2) to terminate the pasta process
-            // SAFETY: We're sending SIGKILL to our own child process
-            #[cfg(unix)]
-            unsafe {
-                let _ = libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
-            }
-            tracing::debug!("Killed pasta daemon (pid: {})", child.id());
+    async fn cleanup_failed_pod(&self, state: &mut PodState) {
+        // Shutdown infra-container if running
+        if let Some(ref mut infra) = state.infra {
+            infra
+                .shutdown(Duration::from_secs(DEFAULT_GRACE_PERIOD_SECS.into()))
+                .await;
         }
 
         // Delete all workload containers
@@ -553,20 +455,10 @@ impl NativePodRuntime {
             let _ = self.runtime.delete(container_id, true).await;
         }
 
-        // Delete pause container
-        let _ = self
-            .runtime
-            .kill(&state.pause_container_id, Signal::Kill, true)
-            .await;
-        let _ = self.runtime.delete(&state.pause_container_id, true).await;
-
         // Clean up bundle directories
         for path in &state.bundle_paths {
             let _ = std::fs::remove_dir_all(path);
         }
-
-        // Clean up named namespaces
-        Self::delete_pod_namespaces(&state.namespace_paths);
     }
 }
 
@@ -597,17 +489,14 @@ impl PodRuntime for NativePodRuntime {
                 ));
             }
 
-            // Reserve slot
+            // Reserve slot with initial state
             pods.insert(
                 pod_id.clone(),
                 PodState {
                     spec: spec.clone(),
-                    pause_container_id: String::new(),
-                    pause_pid: None,
-                    pasta_child: None,
+                    infra: None,
                     containers: HashMap::new(),
                     bundle_paths: Vec::new(),
-                    namespace_paths: HashMap::new(),
                     phase: PodPhase::Pending,
                     started_at: None,
                 },
@@ -625,85 +514,44 @@ impl PodRuntime for NativePodRuntime {
         // Build state for tracking (will be updated as we go)
         let mut state = PodState {
             spec: spec.clone(),
-            pause_container_id: format!("{}-pause", pod_id.as_str()),
-            pause_pid: None,
-            pasta_child: None,
+            infra: None,
             containers: HashMap::new(),
             bundle_paths: vec![pod_dir.clone()],
-            namespace_paths: HashMap::new(),
             phase: PodPhase::Pending,
             started_at: None,
         };
 
         // =========================================================================
-        // PHASE 1: PREPARE (Create namespaces, pull images, build ALL bundles)
+        // PHASE 1: PREPARE (Spawn infra, pull images, build ALL bundles)
         // No runtime state created - fully atomic rollback possible
         // =========================================================================
 
-        // Step 1.1: Create named namespaces FIRST
-        // These are persistent paths that don't depend on any container PID
-        let namespace_paths = match Self::create_named_namespaces(&pod_id) {
-            Ok(paths) => paths,
+        // Step 1.1: Extract port mappings from all containers
+        let port_mappings = extract_port_mappings(&spec.containers);
+
+        // Step 1.2: Spawn infra-container (pasta + infra binary)
+        let infra = match InfraContainer::spawn(
+            pod_id.as_str(),
+            &spec.name,
+            &spec.namespace,
+            &pod_dir,
+            &port_mappings,
+        )
+        .await
+        {
+            Ok(infra) => infra,
             Err(e) => {
+                self.cleanup_failed_pod(&mut state).await;
                 let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                 return Err(e);
             }
         };
-        state.namespace_paths = namespace_paths.clone();
 
-        // Step 1.2: Spawn pasta daemon for port forwarding (if ports configured).
-        // Pasta attaches to the named network namespace and provides port forwarding
-        // for all containers in the pod. This is implicit with the infra-container.
-        let port_mappings = extract_port_mappings(&spec.containers);
-        if !port_mappings.is_empty() {
-            // Get the network namespace path
-            if let Some(netns_path) = namespace_paths.get("network") {
-                let forwarder = PastaForwarder::new().with_netns(netns_path);
-                let mut forwarder = forwarder;
-                if let Err(e) = forwarder.add_ports(&port_mappings) {
-                    tracing::warn!(
-                        pod = %pod_id,
-                        error = %e,
-                        "Failed to configure port mappings, port forwarding disabled"
-                    );
-                } else {
-                    match forwarder.spawn_daemon() {
-                        Ok(child) => {
-                            tracing::info!(
-                                pod = %pod_id,
-                                port_count = port_mappings.len(),
-                                netns = %netns_path.display(),
-                                "Spawned pasta daemon for pod port forwarding (infra-implicit)"
-                            );
-                            state.pasta_child = Some(child);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                pod = %pod_id,
-                                error = %e,
-                                "Failed to spawn pasta daemon, port forwarding disabled"
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // Get namespace paths from infra-container
+        let namespace_paths = infra.namespace_paths();
+        state.infra = Some(infra);
 
-        // Step 1.3: Build pause container bundle with namespace joining
-        let pause_bundle = pod_dir.join("pause");
-        let pause_rootfs = pause_bundle.join("rootfs");
-        if let Err(e) = std::fs::create_dir_all(&pause_rootfs) {
-            self.cleanup_failed_pod(&state).await;
-            let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-            return Err(Error::BundleBuildFailed(format!(
-                "failed to create pause rootfs: {e}"
-            )));
-        }
-        // TODO: Generate proper config.json for pause container with namespace paths
-        // The pause container ALSO joins the named namespaces (it doesn't create them)
-        state.bundle_paths.push(pause_bundle.clone());
-
-        // Step 1.4: Pull all images and build ALL bundles with namespace paths
+        // Step 1.3: Pull all images and build ALL bundles with namespace paths
         use crate::image::Bundle;
         let mut prepared_containers: Vec<(String, Bundle)> = Vec::new();
 
@@ -718,7 +566,7 @@ impl PodRuntime for NativePodRuntime {
             let image = match self.image_service.pull(&container_spec.image).await {
                 Ok(img) => img,
                 Err(e) => {
-                    self.cleanup_failed_pod(&state).await;
+                    self.cleanup_failed_pod(&mut state).await;
                     let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                     return Err(Error::ImagePullFailed {
                         reference: container_spec.image.clone(),
@@ -736,17 +584,13 @@ impl PodRuntime for NativePodRuntime {
                 full_command.extend(args.clone());
             }
 
-            // No pasta wrapping needed - pasta runs as a daemon attached to the
-            // network namespace, providing port forwarding for all containers.
-            let final_command = if full_command.is_empty() {
-                None
-            } else {
-                Some(full_command)
-            };
-
             let config = OciContainerConfig {
                 name: container_spec.name.clone(),
-                command: final_command,
+                command: if full_command.is_empty() {
+                    None
+                } else {
+                    Some(full_command)
+                },
                 env: container_spec.env.clone(),
                 working_dir: container_spec.working_dir.clone(),
                 user_id: None,
@@ -754,7 +598,7 @@ impl PodRuntime for NativePodRuntime {
                 hostname: spec.hostname.clone(),
             };
 
-            // Build bundle with named namespace paths (known before any container starts!)
+            // Build bundle with namespace paths from infra-container
             let bundle = match self.bundle_builder.build_oci_bundle_with_namespaces(
                 &image,
                 &config,
@@ -762,7 +606,7 @@ impl PodRuntime for NativePodRuntime {
             ) {
                 Ok(b) => b,
                 Err(e) => {
-                    self.cleanup_failed_pod(&state).await;
+                    self.cleanup_failed_pod(&mut state).await;
                     let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                     return Err(Error::BundleBuildFailed(format!(
                         "failed to build bundle for {}: {}",
@@ -779,7 +623,7 @@ impl PodRuntime for NativePodRuntime {
         tracing::info!(
             pod = %pod_id,
             container_count = prepared_containers.len(),
-            "PHASE 1 complete: all images pulled, all bundles built (pasta bypass integrated)"
+            "PHASE 1 complete: all images pulled, all bundles built"
         );
 
         // =========================================================================
@@ -787,38 +631,10 @@ impl PodRuntime for NativePodRuntime {
         // All preparation done - now we commit to starting containers
         // =========================================================================
 
-        // Step 2.1: Create and start pause container
-        if let Err(e) = self
-            .runtime
-            .create(&state.pause_container_id, &pause_bundle)
-            .await
-        {
-            self.cleanup_failed_pod(&state).await;
-            let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-            return Err(Error::CreateFailed {
-                id: state.pause_container_id.clone(),
-                reason: e.to_string(),
-            });
-        }
-
-        if let Err(e) = self.runtime.start(&state.pause_container_id).await {
-            self.cleanup_failed_pod(&state).await;
-            let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-            return Err(Error::StartFailed {
-                id: state.pause_container_id.clone(),
-                reason: e.to_string(),
-            });
-        }
-
-        // Get pause container PID for monitoring (not for namespaces anymore)
-        if let Ok(pause_state) = self.runtime.state(&state.pause_container_id).await {
-            state.pause_pid = pause_state.pid;
-        }
-
-        // Step 2.2: Create and start all workload containers (bundles already built)
+        // Create and start all workload containers (bundles already built)
         for (container_id, bundle) in &prepared_containers {
             if let Err(e) = self.runtime.create(container_id, bundle.path()).await {
-                self.cleanup_failed_pod(&state).await;
+                self.cleanup_failed_pod(&mut state).await;
                 let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                 return Err(Error::CreateFailed {
                     id: container_id.clone(),
@@ -827,7 +643,7 @@ impl PodRuntime for NativePodRuntime {
             }
 
             if let Err(e) = self.runtime.start(container_id).await {
-                self.cleanup_failed_pod(&state).await;
+                self.cleanup_failed_pod(&mut state).await;
                 let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
                 return Err(Error::StartFailed {
                     id: container_id.clone(),
@@ -869,28 +685,26 @@ impl PodRuntime for NativePodRuntime {
     }
 
     async fn stop_pod(&self, id: &PodId, grace_period: Duration) -> Result<()> {
-        let state = {
+        let container_ids: Vec<String> = {
             let pods = self
                 .pods
                 .read()
                 .map_err(|_| Error::Internal("lock poisoned".to_string()))?;
             pods.get(id)
-                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?;
-            // Can't hold the lock across await points, so we need to get container IDs
-            let container_ids: Vec<String> = pods
-                .get(id)
-                .map(|s| s.containers.values().cloned().collect())
-                .unwrap_or_default();
-            container_ids
+                .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?
+                .containers
+                .values()
+                .cloned()
+                .collect()
         };
 
-        let grace_secs = grace_period
+        let grace_secs: u32 = grace_period
             .as_secs()
             .try_into()
             .unwrap_or(DEFAULT_GRACE_PERIOD_SECS);
 
         // Stop all workload containers with grace period
-        for container_id in &state {
+        for container_id in &container_ids {
             // Send SIGTERM
             let _ = self.runtime.kill(container_id, Signal::Term, true).await;
         }
@@ -902,7 +716,7 @@ impl PodRuntime for NativePodRuntime {
         while start.elapsed() < grace_duration {
             let all_stopped = {
                 let mut stopped = true;
-                for container_id in &state {
+                for container_id in &container_ids {
                     if let Ok(container_state) = self.runtime.state(container_id).await
                         && container_state.status == crate::runtime::ContainerStatus::Running
                     {
@@ -921,7 +735,7 @@ impl PodRuntime for NativePodRuntime {
         }
 
         // Send SIGKILL to any remaining containers
-        for container_id in &state {
+        for container_id in &container_ids {
             let _ = self.runtime.kill(container_id, Signal::Kill, true).await;
         }
 
@@ -940,7 +754,7 @@ impl PodRuntime for NativePodRuntime {
     }
 
     async fn delete_pod(&self, id: &PodId, force: bool) -> Result<()> {
-        let state = {
+        let mut state = {
             let mut pods = self
                 .pods
                 .write()
@@ -949,13 +763,14 @@ impl PodRuntime for NativePodRuntime {
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?
         };
 
-        // Kill pasta daemon if running
-        if let Some(ref child) = state.pasta_child {
-            #[cfg(unix)]
-            unsafe {
-                let _ = libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
-            }
-            tracing::debug!(pod = %id, pid = child.id(), "Killed pasta daemon");
+        // Shutdown infra-container first
+        if let Some(ref mut infra) = state.infra {
+            let grace = if force {
+                Duration::from_secs(0)
+            } else {
+                Duration::from_secs(DEFAULT_GRACE_PERIOD_SECS.into())
+            };
+            infra.shutdown(grace).await;
         }
 
         // Delete all workload containers
@@ -966,22 +781,10 @@ impl PodRuntime for NativePodRuntime {
             let _ = self.runtime.delete(container_id, force).await;
         }
 
-        // Delete pause container
-        if force {
-            let _ = self
-                .runtime
-                .kill(&state.pause_container_id, Signal::Kill, true)
-                .await;
-        }
-        let _ = self.runtime.delete(&state.pause_container_id, force).await;
-
         // Clean up bundle directories
         for path in &state.bundle_paths {
             let _ = std::fs::remove_dir_all(path);
         }
-
-        // Clean up named namespaces
-        Self::delete_pod_namespaces(&state.namespace_paths);
 
         Ok(())
     }
