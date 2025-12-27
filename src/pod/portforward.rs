@@ -231,10 +231,7 @@ mod tests {
 
     #[test]
     fn test_extract_skips_ports_without_host_port() {
-        let containers = vec![make_container(
-            "test",
-            vec![make_port(80, None, "TCP")],
-        )];
+        let containers = vec![make_container("test", vec![make_port(80, None, "TCP")])];
         let result = extract_port_mappings(&containers);
         assert!(result.mappings.is_empty());
     }

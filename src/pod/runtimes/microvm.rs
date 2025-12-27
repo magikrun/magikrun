@@ -46,8 +46,8 @@
 use crate::error::{Error, Result};
 use crate::image::{BundleBuilder, ImageService, OciContainerConfig, Os, Platform};
 use crate::pod::{
-    ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId,
-    PodPhase, PodRuntime, PodSpec, PodStatus, PodSummary,
+    ContainerStatus, ExecOptions, ExecResult, LogOptions, PodHandle, PodId, PodPhase, PodRuntime,
+    PodSpec, PodStatus, PodSummary,
 };
 use crate::runtime::{KrunRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
@@ -100,7 +100,7 @@ const VM_PODS_SUBDIR: &str = "vm-pods";
 const STOP_POLL_INTERVAL_MS: u64 = 100;
 
 // Use shared port forwarding types
-use crate::pod::{extract_port_mappings, PortMapping, Protocol, MAX_PORT_MAPPINGS};
+use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, Protocol, extract_port_mappings};
 
 // =============================================================================
 // PasstForwarder
@@ -247,8 +247,7 @@ impl PasstForwarder {
                         .arg(format!("{}:{}", mapping.host_port, mapping.container_port));
                 }
                 Protocol::Udp => {
-                    cmd.arg("-u")
-                        .arg(mapping.as_arg());
+                    cmd.arg("-u").arg(mapping.as_arg());
                 }
             }
         }
