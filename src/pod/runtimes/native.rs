@@ -180,7 +180,7 @@ impl NativePodRuntime {
                 .open(&ns_path)
                 .map_err(|e| {
                     // Clean up any namespaces we already created
-                    for (_, created_path) in &paths {
+                    for created_path in paths.values() {
                         let _ = Self::delete_named_namespace(created_path);
                     }
                     Error::Internal(format!(
@@ -228,7 +228,7 @@ impl NativePodRuntime {
                     // Clean up the file we created
                     let _ = fs::remove_file(&ns_path);
                     // Clean up any namespaces we already created
-                    for (_, created_path) in &paths {
+                    for created_path in paths.values() {
                         let _ = Self::delete_named_namespace(created_path);
                     }
                     return Err(Error::Internal(format!(
@@ -241,7 +241,7 @@ impl NativePodRuntime {
                     // Clean up the file we created
                     let _ = fs::remove_file(&ns_path);
                     // Clean up any namespaces we already created
-                    for (_, created_path) in &paths {
+                    for created_path in paths.values() {
                         let _ = Self::delete_named_namespace(created_path);
                     }
                     return Err(Error::Internal(format!(
