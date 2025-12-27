@@ -450,7 +450,7 @@ impl BundleBuilder {
         }
 
         fs::create_dir_all(&rootfs)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to create rootfs: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to create rootfs: {e}")))?;
 
         // Extract layers
         self.extract_layers(&image.layers, &rootfs)?;
@@ -547,7 +547,7 @@ impl BundleBuilder {
     fn bundle_path_unique(&self, digest: &str) -> PathBuf {
         let safe_digest = digest.replace([':', '/'], "-");
         let unique_id = uuid::Uuid::now_v7();
-        self.base_dir.join(format!("{}-{}", safe_digest, unique_id))
+        self.base_dir.join(format!("{safe_digest}-{unique_id}"))
     }
 
     /// Extracts image layers to the rootfs.
@@ -559,11 +559,7 @@ impl BundleBuilder {
 
     /// Generates an OCI runtime spec.
     fn generate_oci_spec(&self, config: &OciContainerConfig) -> OciSpec {
-        let mut env: Vec<String> = config
-            .env
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
+        let mut env: Vec<String> = config.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         // Add PATH if not set
         if !config.env.contains_key("PATH") {
@@ -605,9 +601,9 @@ impl BundleBuilder {
                 .hostname
                 .clone()
                 .unwrap_or_else(|| "container".to_string()),
-            mounts: self.default_mounts(),
+            mounts: Self::default_mounts(),
             linux: Some(OciLinux {
-                namespaces: self.generate_namespaces(config.vm_mode),
+                namespaces: Self::generate_namespaces(config.vm_mode),
                 resources: None,
                 // SECURITY: Restrict syscalls to reduce kernel attack surface
                 seccomp: Some(Self::default_seccomp()),
@@ -631,7 +627,7 @@ impl BundleBuilder {
     /// (hardware virtualization via KVM/Hypervisor.framework), not by Linux
     /// network namespaces. This matches the behavior of Kata Containers and
     /// Firecracker-containerd.
-    fn generate_namespaces(&self, vm_mode: bool) -> Vec<OciNamespace> {
+    fn generate_namespaces(vm_mode: bool) -> Vec<OciNamespace> {
         let mut namespaces = vec![
             OciNamespace {
                 ns_type: "pid".to_string(),
@@ -720,6 +716,7 @@ impl BundleBuilder {
     /// while blocking dangerous ones like `kexec_load`, `reboot`, `mount`, etc.
     /// Based on Docker's default seccomp profile with modifications for minimal
     /// container workloads.
+    #[allow(clippy::too_many_lines)]
     fn default_seccomp() -> OciSeccomp {
         OciSeccomp {
             default_action: "SCMP_ACT_ERRNO".to_string(),
@@ -955,7 +952,7 @@ impl BundleBuilder {
     }
 
     /// Returns default OCI mounts.
-    fn default_mounts(&self) -> Vec<OciMount> {
+    fn default_mounts() -> Vec<OciMount> {
         vec![
             OciMount {
                 destination: "/proc".to_string(),
@@ -1074,13 +1071,13 @@ pub struct OciContainerConfig {
     ///
     /// When `true`, the generated OCI config will not create a new network
     /// namespace. This is used for containers running inside MicroVMs where
-    /// network isolation is provided by the VM boundary (via passt/libkrun).
+    /// network isolation is provided by the VM boundary (via `passt`/`libkrun`).
     ///
     /// # Security
     ///
     /// This is safe for MicroVM containers because:
     /// - The VM provides hardware-level network isolation
-    /// - passt handles port forwarding from host to VM
+    /// - `passt` handles port forwarding from host to VM
     /// - No network traffic can bypass the VM boundary
     pub vm_mode: bool,
 }
@@ -1313,6 +1310,7 @@ pub struct OciSeccompSyscall {
 /// [`Error::ImageTooLarge`]: crate::error::Error::ImageTooLarge
 /// [`Error::PathTraversal`]: crate::error::Error::PathTraversal
 /// [`Error::LayerExtractionFailed`]: crate::error::Error::LayerExtractionFailed
+#[allow(clippy::too_many_lines)]
 pub fn extract_layers_to_rootfs(
     layers: &[LayerInfo],
     rootfs: &Path,
@@ -1487,7 +1485,7 @@ pub fn extract_layers_to_rootfs(
                     // But we MUST reject any path traversal attempts
                     if target_str.contains("..") {
                         return Err(Error::PathTraversal {
-                            path: format!("absolute symlink target contains '..': {}", target_str),
+                            path: format!("absolute symlink target contains '..': {target_str}"),
                         });
                     }
 
