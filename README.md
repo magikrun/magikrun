@@ -169,7 +169,7 @@ These are the **building blocks** that PRI Pod Runtimes compose for atomic pod o
 
 | Runtime | Platform | Backend | Isolation | Atomicity |
 |---------|----------|---------|-----------|-----------|
-| `NativePodRuntime` | Linux | youki + pause | Namespaces + cgroups v2 | Emulated (rollback) |
+| `NativePodRuntime` | Linux | youki + pasta | Namespaces + cgroups v2 | Emulated (rollback) |
 | `MicroVmPodRuntime` | Linux/macOS | libkrun | Hardware VM (KVM/HVF) | Natural (VM boot) |
 | `WasmPodRuntime` | All | wasmtime | WASM sandbox | Natural (store) |
 
@@ -177,11 +177,12 @@ These are the **building blocks** that PRI Pod Runtimes compose for atomic pod o
 
 **Native Pods** (emulated atomicity):
 ```
-1. Create pause container (holds namespaces)
-2. Start infra-container (joins namespaces)
-3. Start app containers (join namespaces)
-4. If any step fails → rollback all previous steps
-5. Return success only when ALL running
+1. Spawn pasta (creates network namespace, port forwarding)
+2. pasta spawns infra-binary (holds namespaces, runs extensions)
+3. Infra-binary writes PID file when ready
+4. Start app containers (join infra namespaces)
+5. If any step fails → rollback all previous steps
+6. Return success only when ALL running
 ```
 
 **MicroVM Pods** (natural atomicity):
@@ -240,10 +241,36 @@ MicroVMs use [passt](https://passt.top/) internally for TCP/UDP/ICMP networking.
 
 ## The Infra-Container
 
-Every pod has an **infra-container** that:
+Every native pod has an **infra-container** that:
 - Holds Linux namespaces (network, IPC, UTS) for other containers to join
 - Runs workplane extensions (service discovery, Raft consensus, mesh)
-- Provides the "pause" functionality but with active capabilities
+- Is spawned by `pasta` which also handles port forwarding
+
+### 2-Process Architecture
+
+Native pods use a simplified 2-process model:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Pod                                                            │
+│                                                                 │
+│  pasta (creates netns, port forwarding)                         │
+│   └─► infra-binary (external, e.g., workplane)                  │
+│        ├─ Infra instance (from magikrun)                        │
+│        ├─ Extensions (from external crate)                      │
+│        └─ holds namespaces for app containers                   │
+│              ▲           ▲           ▲                          │
+│              │ (join)    │ (join)    │ (join)                   │
+│         ┌────┴───┐  ┌────┴───┐  ┌────┴───┐                      │
+│         │ App A  │  │ App B  │  │ App C  │                      │
+│         └────────┘  └────────┘  └────────┘                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Benefits:
+- Correct dependency semantics (pasta parent → infra dies if pasta dies)
+- Simpler process tree than traditional pause container approach
+- Extensions run inside infra binary
 
 ### Extension Model
 
@@ -372,6 +399,14 @@ race conditions and resource leaks.
 | `DEFAULT_GRACE_PERIOD` | 30s | Shutdown grace period |
 | `EXEC_TIMEOUT` | 300s | Exec command timeout |
 | `MAX_INFLIGHT_BLOBS` | 256 | Concurrent download limit |
+| `MAX_PODS` | 1,024 | Maximum pods per runtime |
+| `MAX_POD_ID_LEN` | 64 bytes | Pod ID length limit |
+| `MAX_CONTAINERS_PER_POD` | 16 | Maximum containers per pod |
+| `MAX_VOLUMES_PER_POD` | 64 | Maximum volumes per pod |
+| `MAX_ENV_VARS_PER_CONTAINER` | 256 | Environment variable limit |
+| `MAX_NAME_LEN` | 253 | Pod/container name length limit |
+| `MAX_LABELS_PER_POD` | 64 | Pod label count limit |
+| `MAX_ANNOTATIONS_PER_POD` | 64 | Pod annotation count limit |
 
 ### Layer Extraction Security
 

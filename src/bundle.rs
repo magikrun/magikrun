@@ -431,8 +431,7 @@ impl BundleBuilder {
                 // Remove existing directory to extract fresh
                 if let Err(e) = fs::remove_dir_all(&rootfs) {
                     return Err(Error::BundleBuildFailed(format!(
-                        "failed to remove existing rootfs for fresh extraction: {}",
-                        e
+                        "failed to remove existing rootfs for fresh extraction: {e}"
                     )));
                 }
                 debug!(
@@ -443,8 +442,7 @@ impl BundleBuilder {
                 // It's a file or symlink - remove it to prevent symlink attacks
                 if let Err(e) = fs::remove_file(&rootfs) {
                     return Err(Error::BundleBuildFailed(format!(
-                        "failed to remove existing file/symlink at rootfs path: {}",
-                        e
+                        "failed to remove existing file/symlink at rootfs path: {e}"
                     )));
                 }
                 debug!("Removed file/symlink at rootfs path: {}", rootfs.display());
@@ -461,9 +459,9 @@ impl BundleBuilder {
         let oci_config = self.generate_oci_spec(config);
         let config_path = bundle_dir.join("config.json");
         let config_json = serde_json::to_string_pretty(&oci_config)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to serialize config: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to serialize config: {e}")))?;
         fs::write(&config_path, config_json)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to write config.json: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to write config.json: {e}")))?;
 
         info!("Built OCI bundle: {}", bundle_dir.display());
 
@@ -476,6 +474,14 @@ impl BundleBuilder {
     /// Builds an OCI runtime bundle with namespace paths for pod sharing.
     ///
     /// This is used when joining an existing pod's namespaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - A namespace path is invalid (doesn't match `/proc/<pid>/ns/<type>` format)
+    /// - Bundle directory creation fails
+    /// - Layer extraction fails
+    /// - Config serialization or writing fails
     pub fn build_oci_bundle_with_namespaces(
         &self,
         image: &ImageHandle,
@@ -488,7 +494,7 @@ impl BundleBuilder {
             if !Self::is_valid_namespace_path(&path_str, ns_type) {
                 return Err(Error::InvalidBundle {
                     path: path.clone(),
-                    reason: format!("invalid namespace path for {}: {}", ns_type, path_str),
+                    reason: format!("invalid namespace path for {ns_type}: {path_str}"),
                 });
             }
         }
@@ -497,7 +503,7 @@ impl BundleBuilder {
         let rootfs = bundle_dir.join("rootfs");
 
         fs::create_dir_all(&rootfs)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to create rootfs: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to create rootfs: {e}")))?;
 
         // Extract layers
         self.extract_layers(&image.layers, &rootfs)?;
@@ -516,9 +522,9 @@ impl BundleBuilder {
 
         let config_path = bundle_dir.join("config.json");
         let config_json = serde_json::to_string_pretty(&oci_config)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to serialize config: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to serialize config: {e}")))?;
         fs::write(&config_path, config_json)
-            .map_err(|e| Error::BundleBuildFailed(format!("failed to write config.json: {}", e)))?;
+            .map_err(|e| Error::BundleBuildFailed(format!("failed to write config.json: {e}")))?;
 
         info!(
             "Built OCI bundle with namespace joining: {}",
