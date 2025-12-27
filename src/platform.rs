@@ -242,7 +242,7 @@ impl Platform {
                 }
                 // macOS has no namespace/cgroup support
             }
-            _ => {
+            Os::Unknown => {
                 // Other platforms: minimal capabilities
             }
         }
@@ -305,6 +305,7 @@ impl Platform {
     }
 
     /// Returns true if hardware virtualization is available.
+    #[must_use]
     pub fn has_hypervisor(&self) -> bool {
         self.capabilities.contains(&Capability::Hypervisor)
     }

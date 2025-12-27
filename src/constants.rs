@@ -111,7 +111,7 @@ pub const MAX_CONTAINERS: usize = 1024;
 ///
 /// **Security**: Prevents memory exhaustion from unbounded inflight tracking.
 /// An attacker triggering many concurrent pulls could exhaust memory via
-/// the inflight HashSet if unbounded.
+/// the inflight `HashSet` if unbounded.
 ///
 /// **Rationale**: 256 concurrent layer downloads is generous for legitimate
 /// use while bounding memory usage to ~50 KiB for digest strings in `HashSet`.

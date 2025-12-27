@@ -558,6 +558,7 @@ impl BundleBuilder {
     }
 
     /// Generates an OCI runtime spec.
+    #[allow(clippy::unused_self)]
     fn generate_oci_spec(&self, config: &OciContainerConfig) -> OciSpec {
         let mut env: Vec<String> = config.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
@@ -1559,7 +1560,7 @@ pub fn extract_layers_to_rootfs(
                         let target_in_rootfs = rootfs.join(target_str.trim_start_matches('/'));
                         if !target_in_rootfs.starts_with(rootfs) {
                             return Err(Error::PathTraversal {
-                                path: format!("hardlink target escapes rootfs: {}", target_str),
+                                path: format!("hardlink target escapes rootfs: {target_str}"),
                             });
                         }
                         target_in_rootfs
