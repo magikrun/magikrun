@@ -157,9 +157,19 @@ pub fn extract_port_mappings(containers: &[ContainerSpec]) -> PortMappingResult 
                 continue;
             }
 
+            // SECURITY: Explicit protocol validation - reject unsupported protocols
             let protocol = match port.protocol.to_uppercase().as_str() {
+                "TCP" | "" => Protocol::Tcp, // Default to TCP for empty/unspecified
                 "UDP" => Protocol::Udp,
-                _ => Protocol::Tcp,
+                other => {
+                    tracing::warn!(
+                        container = %container.name,
+                        protocol = other,
+                        "Skipping port mapping with unsupported protocol"
+                    );
+                    skipped_invalid += 1;
+                    continue;
+                }
             };
 
             // Check for duplicates (same host_port + protocol)

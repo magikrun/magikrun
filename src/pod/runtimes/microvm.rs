@@ -51,6 +51,7 @@ use crate::pod::{
 };
 use crate::runtime::{KrunRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -419,16 +420,39 @@ impl PodRuntime for MicroVmPodRuntime {
         let mut port_mappings = port_result.mappings;
 
         // Always add control port for exec/logs
+        // SECURITY: Use CSPRNG to avoid predictable port assignment
         const CONTROL_GUEST_PORT: u16 = 1024;
-        let control_host_port = 10000 + (std::process::id() as u16 % 50000); // Dynamic port
+        let control_host_port: u16 = rand::rng().random_range(10000..60000);
         port_mappings.insert(0, PortMapping::tcp(control_host_port, CONTROL_GUEST_PORT));
 
         // Write TSI configuration to tsi.json
+        // SECURITY: Use restricted permissions (0600) to prevent tampering
         let tsi_config_path = pod_dir.join("tsi.json");
         let tsi_json = serde_json::to_string(&port_mappings)
             .map_err(|e| Error::Internal(format!("failed to serialize TSI config: {e}")))?;
-        std::fs::write(&tsi_config_path, tsi_json)
-            .map_err(|e| Error::Internal(format!("failed to write TSI config: {e}")))?;
+        {
+            use std::io::Write;
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+
+            #[cfg(unix)]
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tsi_config_path);
+            #[cfg(not(unix))]
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tsi_config_path);
+
+            file.map_err(|e| Error::Internal(format!("failed to create TSI config: {e}")))?
+                .write_all(tsi_json.as_bytes())
+                .map_err(|e| Error::Internal(format!("failed to write TSI config: {e}")))?;
+        }
 
         tracing::info!(
             pod = %pod_id,

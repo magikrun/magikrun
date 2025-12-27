@@ -59,6 +59,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
+rand = "0.9"
 
 # Youki libcontainer for native OCI container runtime (Linux only)
 # SECURITY: >=0.5 required for RUSTSEC-2024-0437 (protobuf fix)

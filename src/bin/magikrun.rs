@@ -558,6 +558,12 @@ fn start_krun(
             let mut ptrs = Vec::new();
 
             for mapping in mappings {
+                // SECURITY: Re-validate port values from tsi.json (defense-in-depth)
+                if mapping.host_port == 0 || mapping.container_port == 0 {
+                    eprintln!("Warning: ignoring invalid port mapping with port 0");
+                    continue;
+                }
+
                 if mapping.protocol == magikrun::pod::portforward::Protocol::Udp {
                     eprintln!(
                         "Warning: UDP port mapping {} might not be supported by libkrun TSI",
@@ -566,7 +572,13 @@ fn start_krun(
                 }
                 // Format: "host_port:container_port"
                 let s = format!("{}:{}", mapping.host_port, mapping.container_port);
-                let c_str = CString::new(s).unwrap();
+                let c_str = match CString::new(s) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        eprintln!("Warning: invalid port mapping string, skipping");
+                        continue;
+                    }
+                };
                 c_strings.push(c_str);
             }
 
