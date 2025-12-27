@@ -152,3 +152,63 @@ jobs:
           draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ===========================================================================
+  # Update Homebrew Formula
+  # ===========================================================================
+  update-homebrew:
+    name: Update Homebrew
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: create-release
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download source tarball and calculate SHA256
+        id: sha256
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://github.com/magikrun/magikrun/archive/refs/tags/v${VERSION}.tar.gz"
+          
+          # Wait for GitHub to generate the tarball (can take a few seconds)
+          sleep 10
+          
+          # Download and calculate SHA256
+          curl -L -o source.tar.gz "$URL"
+          SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "Calculated SHA256: $SHA256"
+
+      - name: Checkout homebrew-magikrun
+        uses: actions/checkout@v4
+        with:
+          repository: magikrun/homebrew-magikrun
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA256="${{ steps.sha256.outputs.sha256 }}"
+          FORMULA="homebrew-tap/Formula/magikrun.rb"
+          
+          # Update version in URL
+          sed -i "s|archive/refs/tags/v[0-9.]*\.tar\.gz|archive/refs/tags/v${VERSION}.tar.gz|" "$FORMULA"
+          
+          # Update sha256
+          sed -i "s/sha256 \"[a-f0-9]*\"/sha256 \"${SHA256}\"/" "$FORMULA"
+          
+          echo "Updated formula:"
+          cat "$FORMULA"
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/magikrun.rb
+          git commit -m "Update magikrun to v${{ steps.version.outputs.version }}"
+          git push
