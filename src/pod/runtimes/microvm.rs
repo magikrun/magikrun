@@ -52,12 +52,9 @@ use crate::pod::{
 use crate::runtime::{KrunRuntime, OciRuntime, Signal};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::io;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::RwLock;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -67,31 +64,8 @@ use tokio::time::timeout;
 use crate::pod::runtime_base_path;
 
 // =============================================================================
-// Passt Port Forwarding (MicroVM Networking)
+// Constants
 // =============================================================================
-//
-// passt creates a Unix socket that provides a virtio-net compatible interface.
-// The socket fd is passed to libkrun via `krun_set_passt_fd()`.
-//
-// | Aspect | passt (VMs) |
-// |--------|-------------|
-// | Target | qemu/libkrun VMs |
-// | Mode | Socket fd for virtio-net |
-// | Integration | `krun_set_passt_fd()` |
-// | Performance | ~28 Gbps TCP |
-// =============================================================================
-
-/// Maximum socket path length (Unix socket limit).
-const MAX_SOCKET_PATH_LEN: usize = 108;
-
-/// Poll interval for waiting on process startup.
-const PASST_STARTUP_POLL_MS: u64 = 50;
-
-/// Maximum wait time for process startup.
-const PASST_STARTUP_TIMEOUT_MS: u64 = 5000;
-
-/// Socket path prefix for passt instances.
-const PASST_SOCKET_PREFIX: &str = "/tmp/magikrun-passt-";
 
 /// Subdirectory for MicroVM pod bundles under the base path.
 const VM_PODS_SUBDIR: &str = "vm-pods";
@@ -100,260 +74,7 @@ const VM_PODS_SUBDIR: &str = "vm-pods";
 const STOP_POLL_INTERVAL_MS: u64 = 100;
 
 // Use shared port forwarding types
-use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, Protocol, extract_port_mappings};
-
-// =============================================================================
-// PasstForwarder
-// =============================================================================
-
-/// Port forwarder for MicroVMs using passt.
-///
-/// passt creates a Unix socket that provides a virtio-net compatible
-/// interface. The socket fd is passed to libkrun via `krun_set_passt_fd()`.
-///
-/// # Lifecycle
-///
-/// 1. Create forwarder with pod ID
-/// 2. Add port mappings
-/// 3. Call `start()` to spawn passt
-/// 4. Get `socket_fd()` and pass to libkrun
-/// 5. Forwarder cleaned up on Drop
-struct PasstForwarder {
-    /// Unique identifier for socket path.
-    id: String,
-    /// Socket path for passt.
-    socket_path: PathBuf,
-    /// Port mappings.
-    mappings: Vec<PortMapping>,
-    /// Mapping set for deduplication.
-    mapping_set: HashSet<(u16, Protocol)>,
-    /// passt child process.
-    child: Option<Child>,
-    /// Connected socket fd (after start).
-    ///
-    /// Uses `OwnedFd` for RAII - fd is automatically closed on drop,
-    /// preventing leaks if `stop()` is not called.
-    socket_fd: Option<OwnedFd>,
-}
-
-impl PasstForwarder {
-    /// Creates a new passt forwarder for a pod.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - Unique identifier (pod ID) for socket naming.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if socket path would be too long.
-    fn new(id: &str) -> io::Result<Self> {
-        let socket_path = PathBuf::from(format!("{PASST_SOCKET_PREFIX}{id}.sock"));
-
-        if socket_path.to_string_lossy().len() > MAX_SOCKET_PATH_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("socket path exceeds maximum length of {MAX_SOCKET_PATH_LEN}"),
-            ));
-        }
-
-        Ok(Self {
-            id: id.to_string(),
-            socket_path,
-            mappings: Vec::new(),
-            mapping_set: HashSet::new(),
-            child: None,
-            socket_fd: None,
-        })
-    }
-
-    /// Adds a port mapping.
-    ///
-    /// Must be called before `start()`.
-    fn add_port(&mut self, mapping: PortMapping) -> io::Result<()> {
-        if self.mappings.len() >= MAX_PORT_MAPPINGS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("maximum port mappings ({MAX_PORT_MAPPINGS}) exceeded"),
-            ));
-        }
-
-        let key = (mapping.host_port, mapping.protocol);
-        if self.mapping_set.contains(&key) {
-            // Already exists, no-op
-            return Ok(());
-        }
-
-        self.mapping_set.insert(key);
-        self.mappings.push(mapping);
-
-        tracing::debug!(
-            id = %self.id,
-            mapping = %mapping,
-            "Added port mapping to passt forwarder"
-        );
-
-        Ok(())
-    }
-
-    /// Adds multiple port mappings.
-    fn add_ports(&mut self, mappings: &[PortMapping]) -> io::Result<()> {
-        for mapping in mappings {
-            self.add_port(*mapping)?;
-        }
-        Ok(())
-    }
-
-    /// Returns the socket fd for libkrun.
-    ///
-    /// Must be called after `start()`. Used with `krun_set_passt_fd()`.
-    #[allow(dead_code)] // Will be used when libkrun FFI integration is complete
-    fn socket_fd(&self) -> RawFd {
-        self.socket_fd.as_ref().map_or(-1, |fd| fd.as_raw_fd())
-    }
-
-    /// Returns the socket path.
-    fn socket_path(&self) -> &Path {
-        &self.socket_path
-    }
-
-    /// Starts the passt forwarder.
-    ///
-    /// Spawns passt and waits for the socket to be ready.
-    fn start(&mut self) -> io::Result<()> {
-        if self.child.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "passt forwarder already started",
-            ));
-        }
-
-        // Clean up old socket if exists
-        let _ = std::fs::remove_file(&self.socket_path);
-
-        // Build passt command
-        let mut cmd = Command::new("passt");
-
-        // Socket mode for libkrun
-        cmd.arg("--socket").arg(&self.socket_path);
-
-        // Foreground mode (we manage the process)
-        cmd.arg("--foreground");
-
-        // Add TCP port mappings
-        for mapping in &self.mappings {
-            match mapping.protocol {
-                Protocol::Tcp => {
-                    cmd.arg("-t")
-                        .arg(format!("{}:{}", mapping.host_port, mapping.container_port));
-                }
-                Protocol::Udp => {
-                    cmd.arg("-u").arg(mapping.as_arg());
-                }
-            }
-        }
-
-        // Suppress output
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
-
-        tracing::debug!(
-            id = %self.id,
-            socket = %self.socket_path.display(),
-            mappings = self.mappings.len(),
-            "Spawning passt"
-        );
-
-        // Spawn passt
-        let child = cmd.spawn().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("failed to spawn passt: {e} (is passt installed?)"),
-            )
-        })?;
-
-        self.child = Some(child);
-
-        // Connect to passt socket with retry loop (fixes TOCTOU race)
-        // Instead of checking if file exists then connecting, we try to connect
-        // directly and retry on NotFound/ConnectionRefused.
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(PASST_STARTUP_TIMEOUT_MS);
-
-        let socket = loop {
-            match std::os::unix::net::UnixStream::connect(&self.socket_path) {
-                Ok(s) => break s,
-                Err(e)
-                    if e.kind() == io::ErrorKind::NotFound
-                        || e.kind() == io::ErrorKind::ConnectionRefused =>
-                {
-                    if std::time::Instant::now() > deadline {
-                        // Kill the process if we can't connect
-                        if let Some(ref mut child) = self.child {
-                            let _ = child.kill();
-                        }
-                        self.child = None;
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "failed to connect to passt socket within timeout",
-                        ));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(PASST_STARTUP_POLL_MS));
-                }
-                Err(e) => {
-                    // Unexpected error - clean up and propagate
-                    if let Some(ref mut child) = self.child {
-                        let _ = child.kill();
-                    }
-                    self.child = None;
-                    return Err(e);
-                }
-            }
-        };
-
-        // Convert UnixStream to OwnedFd for RAII (automatic close on drop)
-        // SAFETY: into_raw_fd() gives us ownership of the fd, and from_raw_fd
-        // takes ownership. No double-close is possible.
-        let owned_fd = unsafe { OwnedFd::from_raw_fd(socket.into_raw_fd()) };
-        let fd = owned_fd.as_raw_fd();
-
-        self.socket_fd = Some(owned_fd);
-
-        tracing::info!(
-            id = %self.id,
-            socket_fd = fd,
-            mappings = self.mappings.len(),
-            "passt forwarder started"
-        );
-
-        Ok(())
-    }
-
-    /// Stops the passt forwarder.
-    fn stop(&mut self) -> io::Result<()> {
-        // Close the socket fd - OwnedFd handles close automatically via Drop
-        // Taking the Option ensures we don't try to use it again
-        drop(self.socket_fd.take());
-
-        // Kill passt process
-        if let Some(ref mut child) = self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        self.child = None;
-
-        // Clean up socket file
-        let _ = std::fs::remove_file(&self.socket_path);
-
-        tracing::info!(id = %self.id, "passt forwarder stopped");
-
-        Ok(())
-    }
-}
-
-impl Drop for PasstForwarder {
-    fn drop(&mut self) {
-        let _ = self.stop();
-    }
-}
+use crate::pod::{MAX_PORT_MAPPINGS, PortMapping, extract_port_mappings};
 
 // =============================================================================
 // MicroVM Pod Runtime
@@ -375,11 +96,6 @@ pub struct MicroVmPodRuntime {
 }
 
 /// Internal MicroVM pod state.
-///
-/// NOTE: This struct intentionally does NOT derive Clone or Serialize because
-/// it owns the PasstForwarder which contains a process handle (Child) that
-/// cannot be cloned or serialized. The forwarder must be explicitly cleaned
-/// up when the pod is deleted.
 struct VmPodState {
     /// Pod specification.
     spec: PodSpec,
@@ -387,12 +103,6 @@ struct VmPodState {
     vm_id: String,
     /// Control port for passt-based control protocol (if available).
     control_port: Option<u16>,
-    /// Passt forwarder for networking (owns the passt process).
-    ///
-    /// RESOURCE OWNERSHIP: This field owns the passt child process.
-    /// It MUST be explicitly stopped in delete_pod and cleanup_failed_pod
-    /// to prevent process leaks.
-    passt_forwarder: Option<PasstForwarder>,
     /// Container names in this pod.
     container_names: Vec<String>,
     /// Bundle path (for cleanup).
@@ -481,16 +191,7 @@ impl MicroVmPodRuntime {
     }
 
     /// Cleans up all resources for a failed pod.
-    ///
-    /// Takes ownership of state to ensure passt_forwarder is dropped.
-    async fn cleanup_failed_pod(&self, mut state: VmPodState) {
-        // Stop passt forwarder first (releases network resources)
-        if let Some(mut forwarder) = state.passt_forwarder.take()
-            && let Err(e) = forwarder.stop()
-        {
-            tracing::warn!(vm_id = %state.vm_id, error = %e, "Failed to stop passt forwarder");
-        }
-
+    async fn cleanup_failed_pod(&self, state: VmPodState) {
         // Kill and delete VM
         let _ = self.runtime.kill(&state.vm_id, Signal::Kill, true).await;
         let _ = self.runtime.delete(&state.vm_id, true).await;
@@ -536,7 +237,6 @@ impl PodRuntime for MicroVmPodRuntime {
                     spec: spec.clone(),
                     vm_id: vm_id.clone(),
                     control_port: None,
-                    passt_forwarder: None,
                     container_names: Vec::new(),
                     bundle_path: pod_dir.clone(),
                     phase: PodPhase::Pending,
@@ -556,8 +256,7 @@ impl PodRuntime for MicroVmPodRuntime {
         let mut state = VmPodState {
             spec: spec.clone(),
             vm_id: vm_id.clone(),
-            control_port: None,    // Will be set after passt spawns
-            passt_forwarder: None, // Will be set after passt spawns
+            control_port: None, // Will be set after passt spawns
             container_names: spec.containers.iter().map(|c| c.name.clone()).collect(),
             bundle_path: pod_dir.clone(),
             phase: PodPhase::Pending,
@@ -687,7 +386,7 @@ impl PodRuntime for MicroVmPodRuntime {
         );
 
         // =========================================================================
-        // PHASE 1.5: SPAWN PASST (Network setup before VM boot)
+        // PHASE 1.5: PREPARE NETWORKING (TSI)
         // =========================================================================
 
         // Extract port mappings from all containers using shared port_forward module
@@ -724,61 +423,22 @@ impl PodRuntime for MicroVmPodRuntime {
         let control_host_port = 10000 + (std::process::id() as u16 % 50000); // Dynamic port
         port_mappings.insert(0, PortMapping::tcp(control_host_port, CONTROL_GUEST_PORT));
 
-        // Create passt forwarder for MicroVM networking
-        let mut passt_forwarder = match PasstForwarder::new(&vm_id) {
-            Ok(f) => f,
-            Err(e) => {
-                let err_vm_id = vm_id.clone();
-                let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-                self.cleanup_failed_pod(state).await;
-                return Err(Error::StartFailed {
-                    id: err_vm_id,
-                    reason: format!("failed to create passt forwarder: {e}"),
-                });
-            }
-        };
-
-        // Add all port mappings
-        if let Err(e) = passt_forwarder.add_ports(&port_mappings) {
-            let err_vm_id = vm_id.clone();
-            let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-            self.cleanup_failed_pod(state).await;
-            return Err(Error::StartFailed {
-                id: err_vm_id,
-                reason: format!("failed to add port mappings: {e}"),
-            });
-        }
-
-        // Start passt forwarder
-        if let Err(e) = passt_forwarder.start() {
-            let err_vm_id = vm_id.clone();
-            let _ = self.pods.write().map(|mut m| m.remove(&pod_id));
-            self.cleanup_failed_pod(state).await;
-            return Err(Error::StartFailed {
-                id: err_vm_id,
-                reason: format!("failed to spawn passt: {e}"),
-            });
-        }
+        // Write TSI configuration to tsi.json
+        let tsi_config_path = pod_dir.join("tsi.json");
+        let tsi_json = serde_json::to_string(&port_mappings)
+            .map_err(|e| Error::Internal(format!("failed to serialize TSI config: {e}")))?;
+        std::fs::write(&tsi_config_path, tsi_json)
+            .map_err(|e| Error::Internal(format!("failed to write TSI config: {e}")))?;
 
         tracing::info!(
             pod = %pod_id,
             control_port = control_host_port,
             port_mappings = ?port_mappings,
-            "passt forwarder started for MicroVM networking"
+            "TSI configuration written for MicroVM networking"
         );
 
-        // Write passt socket path to a file that the CLI can read
-        let passt_info_path = pod_dir.join("passt.sock");
-        if let Err(e) = std::fs::write(
-            &passt_info_path,
-            passt_forwarder.socket_path().to_string_lossy().as_bytes(),
-        ) {
-            tracing::warn!("Failed to write passt socket path: {e}");
-        }
-
-        // Update state with passt info - store forwarder to ensure proper cleanup
+        // Update state with control port
         state.control_port = Some(control_host_port);
-        state.passt_forwarder = Some(passt_forwarder);
 
         // =========================================================================
         // PHASE 2: COMMIT (Boot VM - atomic operation)
@@ -870,7 +530,7 @@ impl PodRuntime for MicroVmPodRuntime {
     }
 
     async fn delete_pod(&self, id: &PodId, force: bool) -> Result<()> {
-        let mut state = {
+        let state = {
             let mut pods = self
                 .pods
                 .write()
@@ -878,16 +538,6 @@ impl PodRuntime for MicroVmPodRuntime {
             pods.remove(id)
                 .ok_or_else(|| Error::ContainerNotFound(id.to_string()))?
         };
-
-        // Stop passt forwarder first (releases network resources)
-        // This must happen before VM deletion to ensure clean shutdown.
-        if let Some(mut forwarder) = state.passt_forwarder.take() {
-            if let Err(e) = forwarder.stop() {
-                tracing::warn!(pod = %id, error = %e, "Failed to stop passt forwarder");
-            } else {
-                tracing::debug!(pod = %id, "Stopped passt forwarder");
-            }
-        }
 
         // Kill and delete VM
         if force {

@@ -4,6 +4,7 @@
 //! extraction and validation used by both Native and MicroVM pod runtimes.
 
 use crate::pod::ContainerSpec;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
@@ -22,7 +23,7 @@ pub const MAX_PORT_MAPPINGS: usize = 1024;
 // =============================================================================
 
 /// Network protocol for port forwarding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Protocol {
     /// TCP port forwarding.
     Tcp,
@@ -44,7 +45,7 @@ impl fmt::Display for Protocol {
 // =============================================================================
 
 /// A single port mapping from host to container/VM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PortMapping {
     /// Protocol (TCP or UDP).
     pub protocol: Protocol,

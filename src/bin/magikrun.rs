@@ -485,8 +485,6 @@ fn start_krun(
 ) -> Result<(), String> {
     use std::ffi::CString;
     use std::os::raw::c_char;
-    use std::os::unix::io::AsRawFd;
-    use std::os::unix::net::UnixStream;
 
     let rootfs = bundle.join("rootfs");
     if !rootfs.exists() {
@@ -502,34 +500,26 @@ fn start_krun(
         return Err("no init or shell found in rootfs".to_string());
     };
 
-    // Check for passt socket (written by MicroVmPodRuntime)
-    let passt_socket_path = bundle.join("passt.sock");
-    let passt_socket: Option<UnixStream> = if passt_socket_path.exists() {
-        match std::fs::read_to_string(&passt_socket_path) {
-            Ok(socket_path) => {
-                let socket_path = socket_path.trim();
-                match UnixStream::connect(socket_path) {
-                    Ok(stream) => {
-                        eprintln!("Connected to passt socket: {}", socket_path);
-                        Some(stream)
-                    }
+    // Check for TSI config (written by MicroVmPodRuntime)
+    let tsi_config_path = bundle.join("tsi.json");
+    let tsi_mappings: Option<Vec<magikrun::pod::portforward::PortMapping>> =
+        if tsi_config_path.exists() {
+            match std::fs::File::open(&tsi_config_path) {
+                Ok(file) => match serde_json::from_reader(file) {
+                    Ok(mappings) => Some(mappings),
                     Err(e) => {
-                        eprintln!(
-                            "Warning: failed to connect to passt socket {}: {}",
-                            socket_path, e
-                        );
+                        eprintln!("Warning: failed to parse tsi.json: {}", e);
                         None
                     }
+                },
+                Err(e) => {
+                    eprintln!("Warning: failed to open tsi.json: {}", e);
+                    None
                 }
             }
-            Err(e) => {
-                eprintln!("Warning: failed to read passt socket path: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     state.status = "running".to_string();
     state.pid = Some(std::process::id());
@@ -562,17 +552,34 @@ fn start_krun(
             return Err(format!("krun_set_root failed: {}", ret));
         }
 
-        // Configure passt networking if available
-        if let Some(ref socket) = passt_socket {
-            let fd = socket.as_raw_fd();
-            let ret = krun_sys::krun_set_passt_fd(ctx, fd);
+        // Configure TSI networking if available
+        if let Some(mappings) = tsi_mappings {
+            let mut c_strings = Vec::new();
+            let mut ptrs = Vec::new();
+
+            for mapping in mappings {
+                if mapping.protocol == magikrun::pod::portforward::Protocol::Udp {
+                    eprintln!(
+                        "Warning: UDP port mapping {} might not be supported by libkrun TSI",
+                        mapping
+                    );
+                }
+                // Format: "host_port:container_port"
+                let s = format!("{}:{}", mapping.host_port, mapping.container_port);
+                let c_str = CString::new(s).unwrap();
+                c_strings.push(c_str);
+            }
+
+            for c_str in &c_strings {
+                ptrs.push(c_str.as_ptr());
+            }
+            ptrs.push(std::ptr::null()); // Null terminator
+
+            let ret = krun_sys::krun_set_port_map(ctx, ptrs.as_ptr());
             if ret < 0 {
-                eprintln!(
-                    "Warning: krun_set_passt_fd failed: {} (continuing without passt)",
-                    ret
-                );
+                eprintln!("Warning: krun_set_port_map failed: {}", ret);
             } else {
-                eprintln!("Configured passt networking (fd={})", fd);
+                eprintln!("Configured TSI port mappings");
             }
         }
 
@@ -593,18 +600,6 @@ fn start_krun(
             krun_sys::krun_free_ctx(ctx);
             return Err(format!("krun_set_exec failed: {}", ret));
         }
-
-        // Keep passt socket alive during VM execution.
-        // SAFETY: We use ManuallyDrop instead of mem::forget to avoid leaking
-        // the socket fd on VM startup failure. The socket must remain open until
-        // after krun_start_enter() completes (or fails). ManuallyDrop prevents
-        // the destructor from running while still allowing us to access the fd.
-        // On success, krun_start_enter never returns (process becomes VM).
-        // On failure, the ManuallyDrop will be dropped when the variable goes
-        // out of scope, but since Option<UnixStream> was already moved in,
-        // we're just dropping a ManuallyDrop wrapper (no actual cleanup needed
-        // since the fd ownership was transferred to krun).
-        let _passt_socket_guard = std::mem::ManuallyDrop::new(passt_socket);
 
         // Start VM - THIS NEVER RETURNS ON SUCCESS
         // The process becomes the VM and exits when the VM exits
