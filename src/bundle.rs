@@ -135,7 +135,8 @@ impl<R: Read> Read for SizeLimitedReader<R> {
 
         // Limit the read to not exceed our remaining budget
         let remaining = self.limit - self.bytes_read;
-        let max_read = buf.len().min(remaining as usize);
+        let remaining_usize = usize::try_from(remaining).unwrap_or(usize::MAX);
+        let max_read = buf.len().min(remaining_usize);
 
         let bytes = self.inner.read(&mut buf[..max_read])?;
         self.bytes_read += bytes as u64;
@@ -181,7 +182,7 @@ pub enum BundleFormat {
 /// Used by: [`WasmtimeRuntime`](crate::runtimes::WasmtimeRuntime)
 ///
 /// ### `MicroVm`
-/// MicroVM rootfs with execution configuration:
+/// `MicroVM` rootfs with execution configuration:
 /// - `rootfs` - Guest filesystem
 /// - `command` - Init process path
 /// - `env` - Environment variables
@@ -204,7 +205,7 @@ pub enum Bundle {
         wasi_args: Vec<String>,
         /// WASI environment variables.
         wasi_env: Vec<(String, String)>,
-        /// WASI directory mappings (guest_path, host_path).
+        /// WASI directory mappings (`guest_path`, `host_path`).
         wasi_dirs: Vec<(String, String)>,
         /// Optional fuel limit override (default: `DEFAULT_WASM_FUEL`).
         /// Set to `Some(n)` for CPU-intensive workloads needing more fuel.
@@ -240,8 +241,7 @@ impl Bundle {
     #[must_use]
     pub fn rootfs(&self) -> Option<&Path> {
         match self {
-            Self::OciRuntime { rootfs, .. } => Some(rootfs),
-            Self::MicroVm { rootfs, .. } => Some(rootfs),
+            Self::OciRuntime { rootfs, .. } | Self::MicroVm { rootfs, .. } => Some(rootfs),
             Self::Wasm { .. } => None,
         }
     }
@@ -291,6 +291,10 @@ pub struct BundleBuilder {
 
 impl BundleBuilder {
     /// Creates a new bundle builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle directory cannot be created or storage initialization fails.
     pub fn new() -> Result<Self> {
         let base_dir = Self::default_path();
         let storage = Arc::new(BlobStore::new()?);
@@ -298,6 +302,10 @@ impl BundleBuilder {
     }
 
     /// Creates a bundle builder with a specific base path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle directory cannot be created or storage initialization fails.
     pub fn with_path(base_dir: PathBuf) -> Result<Self> {
         let storage = Arc::new(BlobStore::new()?);
         Self::with_path_and_storage(base_dir, storage)
@@ -309,12 +317,20 @@ impl BundleBuilder {
     /// as it ensures consistent storage for both pulling and building.
     ///
     /// [`ImageService`]: crate::image::ImageService
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle directory cannot be created.
     pub fn with_storage(storage: Arc<BlobStore>) -> Result<Self> {
         let base_dir = Self::default_path();
         Self::with_path_and_storage(base_dir, storage)
     }
 
     /// Creates a bundle builder with specific path and storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle directory cannot be created.
     pub fn with_path_and_storage(base_dir: PathBuf, storage: Arc<BlobStore>) -> Result<Self> {
         fs::create_dir_all(&base_dir).map_err(|e| Error::BundleBuildFailed(e.to_string()))?;
         Ok(Self { base_dir, storage })
@@ -390,6 +406,11 @@ impl BundleBuilder {
     }
 
     /// Builds an OCI runtime bundle from an image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if layer extraction fails, rootfs cannot be created,
+    /// or the runtime spec cannot be generated.
     pub fn build_oci_bundle(
         &self,
         image: &ImageHandle,
@@ -1064,7 +1085,7 @@ pub struct OciProcess {
     pub capabilities: Option<OciCapabilities>,
 }
 
-/// Default value for no_new_privileges (always true for security).
+/// Default value for `no_new_privileges` (always true for security).
 fn default_no_new_privileges() -> bool {
     true
 }
@@ -1155,7 +1176,7 @@ pub struct OciPids {
 /// OCI capability set.
 ///
 /// SECURITY: Containers run with minimal capabilities by default.
-/// Only CAP_NET_BIND_SERVICE is granted to allow binding low ports.
+/// Only `CAP_NET_BIND_SERVICE` is granted to allow binding low ports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OciCapabilities {
     /// Maximum capabilities the process can have.
@@ -1175,12 +1196,12 @@ pub struct OciCapabilities {
 /// OCI seccomp configuration.
 ///
 /// SECURITY: Defines a syscall filtering policy to reduce kernel attack surface.
-/// Uses an allowlist approach where `default_action` is typically SCMP_ACT_ERRNO
+/// Uses an allowlist approach where `default_action` is typically `SCMP_ACT_ERRNO`
 /// and allowed syscalls are listed explicitly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OciSeccomp {
-    /// Default action when syscall not in any rule (e.g., "SCMP_ACT_ERRNO").
+    /// Default action when syscall not in any rule (e.g., `SCMP_ACT_ERRNO`).
     pub default_action: String,
     /// Architectures this profile applies to.
     #[serde(default)]
@@ -1190,7 +1211,7 @@ pub struct OciSeccomp {
     pub syscalls: Vec<OciSeccompSyscall>,
     /// Path to seccomp notification listener socket.
     ///
-    /// When set, syscalls with action "SCMP_ACT_NOTIFY" will send notifications
+    /// When set, syscalls with action `SCMP_ACT_NOTIFY` will send notifications
     /// to this socket instead of blocking. Used for bypass4netns socket bypass.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listener_path: Option<String>,
